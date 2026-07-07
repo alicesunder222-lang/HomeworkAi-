@@ -1,27 +1,30 @@
 import discord
 from discord.ext import commands, tasks
-from groq import Groq  # ระบบประมวลผล Groq AI
+from groq import Groq
 import sqlite3
-from datetime import datetime, timedelta
+import datetime
+import zoneinfo
 import asyncio
 import os
 import sys
 
 # ==================== CONFIGURATION ====================
-# ตั้งค่าคีย์และโทเค็นผ่าน Environment Variables บน Render
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
-# เปิดใช้งาน Groq Client
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# ตั้งค่าโซนเวลาไทย
+tz_thailand = zoneinfo.ZoneInfo("Asia/Bangkok")
+
 # ==================== DATABASE SETUP ====================
 conn = sqlite3.connect('homework.db')
 cursor = conn.cursor()
+# สร้างตารางจดการบ้าน
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS homework (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,43 +33,61 @@ cursor.execute('''
         channel_id INTEGER NOT NULL
     )
 ''')
+# 👑 เพิ่มตารางพิเศษ: เอาไว้จำว่า "วันนี้บอทกดแจ้งเตือนไปแล้วหรือยัง" ป้องกันการส่งซ้ำตอนบอทรีสตาร์ทบ่อยๆ
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS alert_history (
+        alert_date TEXT PRIMARY KEY
+    )
+''')
 conn.commit()
 
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์พร้อมระบบแจ้งเตือนวันต่อวันบน Render แล้วครับ!')
+    print(f'บอท {bot.user.name} ออนไลน์ด้วยระบบกันตาย (เปิดปิดบ่อยก็ไม่พลาดเตือน) บน Render แล้วครับ!')
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
     if not auto_restart_bot.is_running():
         auto_restart_bot.start()
 
-# 1. ระบบเช็กการบ้านอัตโนมัติ (แจ้งเตือนแบบวันต่อวัน รันทุกๆ 24 ชั่วโมง)
-@tasks.loop(hours=24)
+# 1. ระบบเช็กการบ้านอัตโนมัติ (วิ่งเช็กทุกๆ 10 นาที เพื่อความแข็งแรงและแม่นยำสูงสุด)
+@tasks.loop(minutes=10)
 async def check_homework_reminders():
     try:
-        current_conn = sqlite3.connect('homework.db')
-        current_cursor = current_conn.cursor()
+        now_th = datetime.datetime.now(tz_thailand)
+        current_time = now_th.time()
+        today_date = now_th.strftime('%Y-%m-%d')
         
-        # ดึงวันที่ปัจจุบัน (วันนี้) มาเช็กงานแบบวันต่อวัน
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        # ค้นหาการบ้านที่มีกำหนดส่ง "วันนี้"
-        current_cursor.execute("SELECT id, title, channel_id FROM homework WHERE due_date = ?", (today,))
-        rows = current_cursor.fetchall()
-        
-        # เงื่อนไข: ถ้ามีการบ้านที่ต้องส่งวันนี้ ถึงจะส่งข้อความ (หากไม่มีงานจะไม่แสดงอะไรเลย)
-        if rows:
-            for row in rows:
-                hw_id, title, channel_id = row
-                channel = bot.get_channel(channel_id)
-                if channel:
-                    await channel.send(f"🚨 **[แจ้งเตือนการบ้านวันต่อวัน]** @everyone \nงาน: **{title}** มีกำหนดส่งภายใน **วันนี้แล้วนะ!** อย่าลืมเคลียร์กันด้วยครับ 📝🔥")
-                    # แจ้งเตือนเสร็จ ลบงานนั้นออกจากฐานข้อมูลทันทีเพื่อไม่ให้ค้างข้ามวัน
-                    current_cursor.execute("DELETE FROM homework WHERE id = ?", (hw_id,))
-                    current_conn.commit()
+        # 💡 เงื่อนไขเหล็ก: ถ้าเวลาปัจจุบัน "เลยเวลา 07:00 น. เป็นต้นไป" ถึงจะเริ่มทำงาน
+        if current_time >= datetime.time(7, 0, 0):
+            
+            db_conn = sqlite3.connect('homework.db')
+            db_cursor = db_conn.cursor()
+            
+            # เช็กก่อนว่า "วันนี้" บอทเคยส่งแจ้งเตือนไปแล้วหรือยัง?
+            db_cursor.execute("SELECT alert_date FROM alert_history WHERE alert_date = ?", (today_date,))
+            already_sent = db_cursor.fetchone()
+            
+            # ถ้ายัดงานไม่เคยส่งเลยในวันนี้ ให้ลุยเตือนทันที!
+            if not already_sent:
+                # ค้นหาการบ้านที่มีกำหนดส่ง "วันนี้"
+                db_cursor.execute("SELECT id, title, channel_id FROM homework WHERE due_date = ?", (today_date,))
+                rows = db_cursor.fetchall()
+                
+                if rows:
+                    for row in rows:
+                        hw_id, title, channel_id = row
+                        channel = bot.get_channel(channel_id)
+                        if channel:
+                            await channel.send(f"🚨 **[แจ้งเตือนการบ้านวันต่อวัน]** @everyone \nงาน: **{title}** มีกำหนดส่งภายใน **วันนี้แล้วนะ!** อย่าลืมเคลียร์กันด้วยครับ 📝🔥")
+                            # แจ้งเตือนเสร็จ ลบงานนั้นออกจากระบบทันที
+                            db_cursor.execute("DELETE FROM homework WHERE id = ?", (hw_id,))
                     
-        current_conn.close()
+                    # 👑 บันทึกประวัติไว้ว่า "วันนี้เตือนรอบใหญ่เสร็จแล้วนะ" บอทรีสตาร์ทกี่รอบหลังจากนี้ก็จะไม่ส่งซ้ำซาก
+                    db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
+                    db_conn.commit()
+                    
+            db_conn.close()
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือน: {e}")
 
@@ -83,12 +104,11 @@ async def auto_restart_bot():
 
 # ==================== COMMANDS ====================
 
-# 📥 คำสั่งสั่งจดการบ้าน: !จด [ชื่องาน] [ปี-เดือน-วัน]
+# 📥 !จด [ชื่องาน] [ปี-เดือน-วัน]
 @bot.command(name='จด')
 async def add_homework(ctx, title: str, due_date: str):
     try:
-        # ตรวจสอบรูปแบบวันที่ให้ถูกต้อง
-        datetime.strptime(due_date, '%Y-%m-%d')
+        datetime.datetime.strptime(due_date, '%Y-%m-%d')
         db_conn = sqlite3.connect('homework.db')
         db_cursor = db_conn.cursor()
         db_cursor.execute(
@@ -101,7 +121,7 @@ async def add_homework(ctx, title: str, due_date: str):
     except ValueError:
         await ctx.reply("❌ รูปแบบวันที่ไม่ถูกต้อง! กรุณาพิมพ์เป็น **ปี-เดือน-วัน** เช่น `!จด การบ้านคณิต 2026-07-15`")
 
-# 📋 คำสั่งดูรายการการบ้านทั้งหมด: !การบ้าน (หากไม่มีงานค้างเพิ่มเติม จะไม่แสดงข้อความใดๆ เลย)
+# 📋 !การบ้าน (หากไม่มีงานค้างเพิ่ม จะเงียบกริบ)
 @bot.command(name='การบ้าน')
 async def list_homework(ctx):
     db_conn = sqlite3.connect('homework.db')
@@ -110,17 +130,15 @@ async def list_homework(ctx):
     rows = db_cursor.fetchall()
     db_conn.close()
     
-    # หากไม่มีงานค้างเพิ่ม จะไม่แสดงข้อความใดๆ เลยตามเงื่อนไข
     if not rows:
         return
         
     msg = "📝 **รายการการบ้านปัจจุบัน:**\n"
     for row in rows:
-        # แสดง ID ด้านหน้าเพื่อง่ายต่อการสั่งลบด้วยมือ
         msg += f"🔹 [ID: {row[0]}] **{row[1]}** - ส่งวันที่ {row[2]}\n"
     await ctx.reply(msg)
 
-# 🗑️ คำสั่งลบงานแบบระบุเอง: !ลบ [เลข ID ของงาน]
+# 🗑️ !ลบ [เลข ID ของงาน]
 @bot.command(name='ลบ')
 async def delete_homework(ctx, homework_id: int):
     db_conn = sqlite3.connect('homework.db')
@@ -138,7 +156,7 @@ async def delete_homework(ctx, homework_id: int):
         
     db_conn.close()
 
-# 🤖 ฟังก์ชันเชื่อมต่อกับ Groq AI (โมเดล Llama 3)
+# 🤖 ระบบสมองกล Groq AI (Llama 3)
 def ask_groq(user_question):
     if not groq_client:
         return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI (กรุณาใส่ GROQ_API_KEY)"
@@ -154,19 +172,17 @@ def ask_groq(user_question):
     )
     return response.choices[0].message.content
 
-# 💬 ระบบดักจับข้อความและการแท็กเพื่อคุยกับ AI
+# 💬 ดักจับการแท็กบอท
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
 
-    # ตรวจสอบว่าบอทโดนแท็กเพื่อถามคำถามหรือไม่
     if bot.user.mentioned_in(message):
         user_question = message.content.replace(f'<@{bot.user.id}>', '').strip()
         if user_question:
             async with message.channel.typing():
                 try:
-                    # แยกเธรดการทำงานของ AI ไม่ให้ดึงบอทดิสคอร์ดหลักหลุดออนไลน์
                     reply_text = await asyncio.to_thread(ask_groq, user_question)
                     await message.reply(reply_text)
                 except Exception as e:
@@ -174,8 +190,8 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# รันระบบบอท
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
 else:
     print("❌ ไม่พบ DISCORD_TOKEN ในระบบ")
+
