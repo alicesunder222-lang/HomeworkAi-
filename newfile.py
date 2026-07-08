@@ -8,7 +8,7 @@ import asyncio
 import os
 import sys
 
-# 👑 ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
+# ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
 from flask import Flask
 from threading import Thread
 import requests
@@ -22,7 +22,6 @@ def home():
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
 
-# 🔥 ปรับใหม่: วิ่งสะกิดตัวเองถี่ยิบ "ทุกๆ 1 นาที" ไม่ยอมให้เครื่องหลับเด็ดขาด
 @tasks.loop(minutes=1)
 async def keep_alive_ping():
     my_url = os.environ.get('MY_BOT_URL')
@@ -66,7 +65,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์แบบจบในตัวเดียว ยิงสะกิดทุก 1 นาที แล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ด้วยระบบ Embed เต็มรูปแบบแล้วครับน้า!')
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
     if not auto_restart_bot.is_running():
@@ -74,7 +73,7 @@ async def on_ready():
     if not keep_alive_ping.is_running():
         keep_alive_ping.start()
 
-# 1. ระบบเช็กการบ้านอัตโนมัติ (วิ่งส่องทุกๆ 10 นาที เลย 7 โมงเมื่อไหร่เตือนทันที)
+# 1. ระบบเช็กการบ้านอัตโนมัติ (แจ้งเตือน 7 โมงเช้า เป็นกล่อง Embed สีแดงเตือนภัย)
 @tasks.loop(minutes=10)
 async def check_homework_reminders():
     try:
@@ -98,8 +97,17 @@ async def check_homework_reminders():
                         hw_id, title, channel_id = row
                         channel = bot.get_channel(channel_id)
                         if channel:
-                            await channel.send(f"🚨 **[แจ้งเตือนการบ้านวันต่อวัน]** @everyone \nงาน: **{title}** มีกำหนดส่งภายใน **วันนี้แล้วนะ!** 📝🔥")
-                            db_cursor.execute("DELETE FROM homework WHERE id = ?", (hw_id,))
+                            # 👑 สร้างกล่อง Embed สีแดงแจ้งเตือนการบ้านวันนี้
+                            embed = discord.Embed(
+                                title="🚨 แจ้งเตือนการบ้านวันต่อวัน",
+                                description=f"งาน: **{title}**",
+                                color=discord.Color.red()
+                            )
+                            embed.add_field(name="📅 กำหนดส่ง", value="🔥 **ภายในวันนี้แล้วนะ!**", inline=False)
+                            embed.set_footer(text="กรุณาส่งงานให้ตรงเวลาด้วยครับด้วยความหวังดีจากบอทการบ้าน")
+                            
+                            # ส่งแท็ก @everyone คู่กับกล่อง Embed
+                            await channel.send(content="@everyone", embed=embed)
                     
                     db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
                     db_conn.commit()
@@ -131,22 +139,59 @@ async def add_homework(ctx, title: str, due_date: str):
         )
         db_conn.commit()
         db_conn.close()
-        await ctx.reply(f"✅ บันทึกสำเร็จ: **{title}** \n📅 กำหนดส่ง: {due_date}")
+        
+        # 👑 กล่อง Embed ยืนยันการจดสำเร็จ (สีเขียว)
+        embed = discord.Embed(
+            title="✅ บันทึกการบ้านสำเร็จ",
+            color=discord.Color.green(),
+            timestamp=datetime.datetime.now(tz_thailand)
+        )
+        embed.add_field(name="📝 ชื่องาน / วิชา", value=title, inline=True)
+        embed.add_field(name="📅 กำหนดส่ง", value=due_date, inline=True)
+        await ctx.reply(embed=embed)
+        
     except ValueError:
-        await ctx.reply("❌ รูปแบบวันที่ไม่ถูกต้อง! กรุณาพิมพ์เป็น **ปี-เดือน-วัน** เช่น `!จด การบ้านคณิต 2026-07-15`")
+        embed = discord.Embed(
+            title="❌ บันทึกไม่สำเร็จ",
+            description="รูปแบบวันที่ไม่ถูกต้อง! กรุณาพิมพ์เป็น **ปี-เดือน-วัน** เช่น `!จด การบ้านคณิต 2026-07-15`",
+            color=discord.Color.dark_red()
+        )
+        await ctx.reply(embed=embed)
 
+# 📋 👑 คำสั่ง !การบ้าน แบบ Embed จัดตารางข้อมูล (สีฟ้า)
 @bot.command(name='การบ้าน')
 async def list_homework(ctx):
+    now_th = datetime.datetime.now(tz_thailand)
+    today_date = now_th.strftime('%Y-%m-%d')
+    
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
-    db_cursor.execute("SELECT id, title, due_date FROM homework ORDER BY due_date ASC")
+    db_cursor.execute("SELECT id, title, due_date FROM homework WHERE due_date >= ? ORDER BY due_date ASC", (today_date,))
     rows = db_cursor.fetchall()
     db_conn.close()
-    if not rows: return
-    msg = "📝 **รายการการบ้านปัจจุบัน:**\n"
+    
+    if not rows:
+        embed = discord.Embed(
+            title="🎉 ยินดีด้วย!",
+            description="**ตอนนี้ไม่มีการบ้านค้างในระบบเลยครับ!** สบายใจได้",
+            color=discord.Color.gold()
+        )
+        await ctx.reply(embed=embed)
+        return
+        
+    embed = discord.Embed(
+        title="📝 รายการการบ้านที่ต้องส่งทั้งหมดตอนนี้",
+        color=discord.Color.blue(),
+        timestamp=datetime.datetime.now(tz_thailand)
+    )
+    
     for row in rows:
-        msg += f"🔹 [ID: {row[0]}] **{row[1]}** - ส่งวันที่ {row[2]}\n"
-    await ctx.reply(msg)
+        embed.add_field(
+            name=f"🔹 [ID: {row[0]}] {row[1]}",
+            value=f"📅 กำหนดส่ง: **{row[2]}**",
+            inline=False
+        )
+    await ctx.reply(embed=embed)
 
 @bot.command(name='ลบ')
 async def delete_homework(ctx, homework_id: int):
@@ -157,9 +202,21 @@ async def delete_homework(ctx, homework_id: int):
     if row:
         db_cursor.execute("DELETE FROM homework WHERE id = ?", (homework_id,))
         db_conn.commit()
-        await ctx.reply(f"🗑️ ลบการบ้านงาน **\"{row[0]}\"** ออกจากระบบเรียบร้อยแล้วครับ!")
+        
+        # 👑 Embed ลบงานสำเร็จ (สีเทา/ดำ)
+        embed = discord.Embed(
+            title="🗑️ ลบการบ้านสำเร็จ",
+            description=f"นำงาน **\"{row[0]}\"** ออกจากระบบเรียบร้อยแล้วครับ!",
+            color=discord.Color.light_grey()
+        )
+        await ctx.reply(embed=embed)
     else:
-        await ctx.reply(f"❌ ไม่พบการบ้านรหัส ID: {homework_id} ในระบบ")
+        embed = discord.Embed(
+            title="❌ ลบไม่สำเร็จ",
+            description=f"ไม่พบการบ้านรหัส ID: {homework_id} ในระบบ",
+            color=discord.Color.red()
+        )
+        await ctx.reply(embed=embed)
     db_conn.close()
 
 def ask_groq(user_question):
@@ -183,7 +240,14 @@ async def on_message(message):
             async with message.channel.typing():
                 try:
                     reply_text = await asyncio.to_thread(ask_groq, user_question)
-                    await message.reply(reply_text)
+                    
+                    # 👑 ปรับการตอบคำถาม AI ให้เป็นกล่อง Embed สีม่วงสุดเท่
+                    embed = discord.Embed(
+                        title="🤖 คำตอบจาก AI ผู้ช่วยทำการบ้าน",
+                        description=reply_text,
+                        color=discord.Color.purple()
+                    )
+                    await message.reply(embed=embed)
                 except Exception as e:
                     await message.reply(f"❌ ระบบ Groq AI ขัดข้อง: {e}")
     await bot.process_commands(message)
@@ -197,4 +261,4 @@ if __name__ == "__main__":
         bot.run(DISCORD_TOKEN)
     else:
         print("❌ ไม่พบ DISCORD_TOKEN ในระบบ")
-
+        
