@@ -8,7 +8,7 @@ import asyncio
 import os
 import sys
 
-# 👑 ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
+# ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
 from flask import Flask
 from threading import Thread
 import requests
@@ -17,7 +17,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้านแบบจำสถานะห้อง เปิดระบบ Embed และยิงสะกิดตัวเองทุก 1 นาที สแตนด์บายพร้อมรัน!"
+    return "บอทการบ้าน เวอร์ชัน Embed ฝาแฝด !การบ้าน พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -55,7 +55,6 @@ cursor.execute('''
         channel_id INTEGER NOT NULL
     )
 ''')
-# ตารางจำสถานะเปิด/ปิดการแจ้งเตือนของแต่ละห้อง (สั่งครั้งเดียวจำถาวร)
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS notification_settings (
         channel_id INTEGER PRIMARY KEY,
@@ -72,7 +71,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์แบบเซฟสถานะห้อง ยิงสะกิดทุก 1 นาที เรียบร้อยครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบ Embed ฝาแฝดเรียบร้อยแล้วครับน้า!')
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
     if not auto_restart_bot.is_running():
@@ -80,7 +79,7 @@ async def on_ready():
     if not keep_alive_ping.is_running():
         keep_alive_ping.start()
 
-# 1. ระบบเช็กการบ้านอัตโนมัติ (ส่องทุก 10 นาที เลย 7 โมงเช้าจะแจ้งเตือนเฉพาะห้องที่พิมพ์สั่ง "เปิด" ไว้เท่านั้น)
+# 1. 👑 ระบบเช็กการบ้านอัตโนมัติ (ปรับหน้าตา Embed ให้เป็นแบบเดียวกับ !การบ้าน เป๊ะๆ)
 @tasks.loop(minutes=10)
 async def check_homework_reminders():
     try:
@@ -92,38 +91,40 @@ async def check_homework_reminders():
             db_conn = sqlite3.connect('homework.db')
             db_cursor = db_conn.cursor()
             
-            # เช็กว่าวันนี้เคยเตือนไปแล้วหรือยัง
             db_cursor.execute("SELECT alert_date FROM alert_history WHERE alert_date = ?", (today_date,))
             already_sent = db_cursor.fetchone()
             
             if not already_sent:
-                # ดึงเฉพาะห้องที่เปิดระบบแจ้งเตือนเอาไว้ (is_enabled = 1)
+                # ลบงานเก่าที่เลยกำหนดส่งทิ้งทันที
+                db_cursor.execute("DELETE FROM homework WHERE due_date < ?", (today_date,))
+                db_conn.commit()
+                
                 db_cursor.execute("SELECT channel_id FROM notification_settings WHERE is_enabled = 1")
                 active_channels = db_cursor.fetchall()
                 
-                has_alerts_sent = False
-                
                 for (channel_id,) in active_channels:
-                    # ค้นหางานที่ต้องส่งวันนี้ของห้องนั้นๆ
-                    db_cursor.execute("SELECT title FROM homework WHERE due_date = ? AND channel_id = ?", (today_date, channel_id))
+                    db_cursor.execute("SELECT id, title, due_date FROM homework WHERE due_date >= ? ORDER BY due_date ASC", (today_date,))
                     rows = db_cursor.fetchall()
                     
                     if rows:
                         channel = bot.get_channel(channel_id)
                         if channel:
+                            # 👑 ใช้ Embed สีฟ้า และหัวข้อเดียวกับคำสั่ง !การบ้าน เป๊ะๆ ตามที่น้าต้องการ
                             embed = discord.Embed(
-                                title="🚨 แจ้งเตือนการบ้านวันต่อวัน",
-                                description="รายการการบ้านที่ต้องส่งภายในวันนี้ครับน้า! 🔥",
-                                color=discord.Color.red()
+                                title="📝 รายการการบ้านที่ต้องส่งทั้งหมดตอนนี้",
+                                color=discord.Color.blue(),
+                                timestamp=datetime.datetime.now(tz_thailand)
                             )
                             for row in rows:
-                                embed.add_field(name="📝 ชื่องาน / วิชา", value=f"**{row[0]}**", inline=False)
-                            embed.set_footer(text="กรุณาส่งงานให้ตรงเวลาด้วยครับด้วยความหวังดีจากบอทการบ้าน")
+                                embed.add_field(
+                                    name=f"🔹 [ID: {row[0]}] {row[1]}",
+                                    value=f"📅 กำหนดส่ง: **{row[2]}**",
+                                    inline=False
+                                )
                             
+                            # ส่งแจ้งเตือนแบบแท็ก @everyone คู่กับกล่องคู่แฝด !การบ้าน
                             await channel.send(content="@everyone", embed=embed)
-                            has_alerts_sent = True
                 
-                # บันทึกประวัติว่าวันนี้เตือนเรียบร้อยแล้ว (เฉพาะกรณีที่มีการส่งข้อความไป หรือเพื่อให้ระบบเคลียร์วันต่อวัน)
                 db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
                 db_conn.commit()
                     
@@ -131,7 +132,7 @@ async def check_homework_reminders():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
 
-# 2. ระบบรีสตาร์ทตัวเองอัตโนมัติทุกๆ 1 ชั่วโมงเพื่อเคลียร์แรม
+# 2. ระบบรีสตาร์ทตัวเองอัตโนมัติทุกๆ 1 ชั่วโมง
 @tasks.loop(hours=1)
 async def auto_restart_bot():
     if auto_restart_bot.current_loop == 0:
@@ -143,7 +144,6 @@ async def auto_restart_bot():
 
 # ==================== COMMANDS ====================
 
-# 📢 คำสั่ง !แจ้งงาน เปิด / !แจ้งงาน ปิด
 @bot.command(name='แจ้งงาน')
 async def set_notification(ctx, action: str = None):
     channel_id = ctx.channel.id
@@ -156,7 +156,7 @@ async def set_notification(ctx, action: str = None):
         
         embed = discord.Embed(
             title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ",
-            description="บอทจะคอยตรวจสอบการบ้านและแจ้งเตือนตอน **07:00 น.** ในห้องนี้ให้ทุกวันครับน้า! (หากไม่มีการบ้านเพิ่มระบบจะเงียบกริบให้ครับ)",
+            description="บอทจะคอยรายงานการบ้านค้างทั้งหมดให้ตอน **07:00 น.** ในห้องนี้ทุกวันครับน้า! (หากไม่มีการบ้านเหลืออยู่เลย ระบบจะเงียบกริบให้ครับ)",
             color=discord.Color.brand_green()
         )
         await ctx.send(embed=embed)
