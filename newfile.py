@@ -8,7 +8,7 @@ import asyncio
 import os
 import sys
 
-# ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
+# 👑 ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
 from flask import Flask
 from threading import Thread
 import requests
@@ -17,7 +17,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้านสแตนด์บาย 24 ชั่วโมง ด้วยระบบยิงสะกิดตัวเองทุก 1 นาที!"
+    return "บอทการบ้านแบบจำสถานะห้อง เปิดระบบ Embed และยิงสะกิดตัวเองทุก 1 นาที สแตนด์บายพร้อมรัน!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -55,6 +55,13 @@ cursor.execute('''
         channel_id INTEGER NOT NULL
     )
 ''')
+# ตารางจำสถานะเปิด/ปิดการแจ้งเตือนของแต่ละห้อง (สั่งครั้งเดียวจำถาวร)
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS notification_settings (
+        channel_id INTEGER PRIMARY KEY,
+        is_enabled INTEGER DEFAULT 0
+    )
+''')
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS alert_history (
         alert_date TEXT PRIMARY KEY
@@ -65,7 +72,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ด้วยระบบ Embed เต็มรูปแบบแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์แบบเซฟสถานะห้อง ยิงสะกิดทุก 1 นาที เรียบร้อยครับน้า!')
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
     if not auto_restart_bot.is_running():
@@ -73,7 +80,7 @@ async def on_ready():
     if not keep_alive_ping.is_running():
         keep_alive_ping.start()
 
-# 1. ระบบเช็กการบ้านอัตโนมัติ (แจ้งเตือน 7 โมงเช้า เป็นกล่อง Embed สีแดงเตือนภัย)
+# 1. ระบบเช็กการบ้านอัตโนมัติ (ส่องทุก 10 นาที เลย 7 โมงเช้าจะแจ้งเตือนเฉพาะห้องที่พิมพ์สั่ง "เปิด" ไว้เท่านั้น)
 @tasks.loop(minutes=10)
 async def check_homework_reminders():
     try:
@@ -85,38 +92,46 @@ async def check_homework_reminders():
             db_conn = sqlite3.connect('homework.db')
             db_cursor = db_conn.cursor()
             
+            # เช็กว่าวันนี้เคยเตือนไปแล้วหรือยัง
             db_cursor.execute("SELECT alert_date FROM alert_history WHERE alert_date = ?", (today_date,))
             already_sent = db_cursor.fetchone()
             
             if not already_sent:
-                db_cursor.execute("SELECT id, title, channel_id FROM homework WHERE due_date = ?", (today_date,))
-                rows = db_cursor.fetchall()
+                # ดึงเฉพาะห้องที่เปิดระบบแจ้งเตือนเอาไว้ (is_enabled = 1)
+                db_cursor.execute("SELECT channel_id FROM notification_settings WHERE is_enabled = 1")
+                active_channels = db_cursor.fetchall()
                 
-                if rows:
-                    for row in rows:
-                        hw_id, title, channel_id = row
+                has_alerts_sent = False
+                
+                for (channel_id,) in active_channels:
+                    # ค้นหางานที่ต้องส่งวันนี้ของห้องนั้นๆ
+                    db_cursor.execute("SELECT title FROM homework WHERE due_date = ? AND channel_id = ?", (today_date, channel_id))
+                    rows = db_cursor.fetchall()
+                    
+                    if rows:
                         channel = bot.get_channel(channel_id)
                         if channel:
-                            # 👑 สร้างกล่อง Embed สีแดงแจ้งเตือนการบ้านวันนี้
                             embed = discord.Embed(
                                 title="🚨 แจ้งเตือนการบ้านวันต่อวัน",
-                                description=f"งาน: **{title}**",
+                                description="รายการการบ้านที่ต้องส่งภายในวันนี้ครับน้า! 🔥",
                                 color=discord.Color.red()
                             )
-                            embed.add_field(name="📅 กำหนดส่ง", value="🔥 **ภายในวันนี้แล้วนะ!**", inline=False)
+                            for row in rows:
+                                embed.add_field(name="📝 ชื่องาน / วิชา", value=f"**{row[0]}**", inline=False)
                             embed.set_footer(text="กรุณาส่งงานให้ตรงเวลาด้วยครับด้วยความหวังดีจากบอทการบ้าน")
                             
-                            # ส่งแท็ก @everyone คู่กับกล่อง Embed
                             await channel.send(content="@everyone", embed=embed)
-                    
-                    db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
-                    db_conn.commit()
+                            has_alerts_sent = True
+                
+                # บันทึกประวัติว่าวันนี้เตือนเรียบร้อยแล้ว (เฉพาะกรณีที่มีการส่งข้อความไป หรือเพื่อให้ระบบเคลียร์วันต่อวัน)
+                db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
+                db_conn.commit()
                     
             db_conn.close()
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือน: {e}")
+        print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
 
-# 2. ระบบรีสตาร์ทตัวเองอัตโนมัติทุกๆ 1 ชั่วโมง
+# 2. ระบบรีสตาร์ทตัวเองอัตโนมัติทุกๆ 1 ชั่วโมงเพื่อเคลียร์แรม
 @tasks.loop(hours=1)
 async def auto_restart_bot():
     if auto_restart_bot.current_loop == 0:
@@ -127,6 +142,46 @@ async def auto_restart_bot():
     os.execv(sys.executable, ['python'] + sys.argv)
 
 # ==================== COMMANDS ====================
+
+# 📢 คำสั่ง !แจ้งงาน เปิด / !แจ้งงาน ปิด
+@bot.command(name='แจ้งงาน')
+async def set_notification(ctx, action: str = None):
+    channel_id = ctx.channel.id
+    db_conn = sqlite3.connect('homework.db')
+    db_cursor = db_conn.cursor()
+    
+    if action == "เปิด":
+        db_cursor.execute("REPLACE INTO notification_settings (channel_id, is_enabled) VALUES (?, 1)", (channel_id,))
+        db_conn.commit()
+        
+        embed = discord.Embed(
+            title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ",
+            description="บอทจะคอยตรวจสอบการบ้านและแจ้งเตือนตอน **07:00 น.** ในห้องนี้ให้ทุกวันครับน้า! (หากไม่มีการบ้านเพิ่มระบบจะเงียบกริบให้ครับ)",
+            color=discord.Color.brand_green()
+        )
+        await ctx.send(embed=embed)
+        
+    elif action == "ปิด":
+        db_cursor.execute("REPLACE INTO notification_settings (channel_id, is_enabled) VALUES (?, 0)", (channel_id,))
+        db_conn.commit()
+        
+        embed = discord.Embed(
+            title="🔕 ปิดระบบแจ้งเตือนอัตโนมัติ",
+            description="ปิดการแจ้งเตือนตอน 7 โมงเช้าในห้องนี้เรียบร้อยครับ",
+            color=discord.Color.light_grey()
+        )
+        await ctx.send(embed=embed)
+        
+    else:
+        embed = discord.Embed(
+            title="❌ วิธีใช้คำสั่งแจ้งงาน",
+            description="กรุณาพิมพ์ระบุสถานะด้วยครับน้า เช่น:\n`!แจ้งงาน เปิด` - เพื่อเปิดระบเตือน 7 โมงเช้า\n`!แจ้งงาน ปิด` - เพื่อปิดระบบเตือน",
+            color=discord.Color.orange()
+        )
+        await ctx.reply(embed=embed)
+    
+    db_conn.close()
+
 @bot.command(name='จด')
 async def add_homework(ctx, title: str, due_date: str):
     try:
@@ -140,7 +195,6 @@ async def add_homework(ctx, title: str, due_date: str):
         db_conn.commit()
         db_conn.close()
         
-        # 👑 กล่อง Embed ยืนยันการจดสำเร็จ (สีเขียว)
         embed = discord.Embed(
             title="✅ บันทึกการบ้านสำเร็จ",
             color=discord.Color.green(),
@@ -149,7 +203,6 @@ async def add_homework(ctx, title: str, due_date: str):
         embed.add_field(name="📝 ชื่องาน / วิชา", value=title, inline=True)
         embed.add_field(name="📅 กำหนดส่ง", value=due_date, inline=True)
         await ctx.reply(embed=embed)
-        
     except ValueError:
         embed = discord.Embed(
             title="❌ บันทึกไม่สำเร็จ",
@@ -158,7 +211,6 @@ async def add_homework(ctx, title: str, due_date: str):
         )
         await ctx.reply(embed=embed)
 
-# 📋 👑 คำสั่ง !การบ้าน แบบ Embed จัดตารางข้อมูล (สีฟ้า)
 @bot.command(name='การบ้าน')
 async def list_homework(ctx):
     now_th = datetime.datetime.now(tz_thailand)
@@ -184,7 +236,6 @@ async def list_homework(ctx):
         color=discord.Color.blue(),
         timestamp=datetime.datetime.now(tz_thailand)
     )
-    
     for row in rows:
         embed.add_field(
             name=f"🔹 [ID: {row[0]}] {row[1]}",
@@ -203,7 +254,6 @@ async def delete_homework(ctx, homework_id: int):
         db_cursor.execute("DELETE FROM homework WHERE id = ?", (homework_id,))
         db_conn.commit()
         
-        # 👑 Embed ลบงานสำเร็จ (สีเทา/ดำ)
         embed = discord.Embed(
             title="🗑️ ลบการบ้านสำเร็จ",
             description=f"นำงาน **\"{row[0]}\"** ออกจากระบบเรียบร้อยแล้วครับ!",
@@ -240,8 +290,6 @@ async def on_message(message):
             async with message.channel.typing():
                 try:
                     reply_text = await asyncio.to_thread(ask_groq, user_question)
-                    
-                    # 👑 ปรับการตอบคำถาม AI ให้เป็นกล่อง Embed สีม่วงสุดเท่
                     embed = discord.Embed(
                         title="🤖 คำตอบจาก AI ผู้ช่วยทำการบ้าน",
                         description=reply_text,
@@ -261,4 +309,4 @@ if __name__ == "__main__":
         bot.run(DISCORD_TOKEN)
     else:
         print("❌ ไม่พบ DISCORD_TOKEN ในระบบ")
-        
+
