@@ -87,7 +87,7 @@ async def check_homework_reminders():
         current_time = now_th.time()
         today_date = now_th.strftime('%Y-%m-%d')
         
-        if current_time >= datetime.time(7, 30, 0):
+        if current_time >= datetime.time(7, 50, 0):
             db_conn = sqlite3.connect('homework.db')
             db_cursor = db_conn.cursor()
             
