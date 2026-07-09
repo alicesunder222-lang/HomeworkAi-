@@ -17,7 +17,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชัน Embed ฝาแฝด !การบ้าน พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชันเสถียร (ลบแบบแมนนวล) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -71,15 +71,13 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบ Embed ฝาแฝดเรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (ไม่มีลบออโต้) เรียบร้อยแล้วครับน้า!')
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
-    if not auto_restart_bot.is_running():
-        auto_restart_bot.start()
     if not keep_alive_ping.is_running():
         keep_alive_ping.start()
 
-# 1. 👑 ระบบเช็กการบ้านอัตโนมัติ (ปรับหน้าตา Embed ให้เป็นแบบเดียวกับ !การบ้าน เป๊ะๆ)
+# 1. 👑 ระบบรายงานการบ้านค้างตอนเช้า (ไม่มีการลบข้อมูลอัตโนมัติเด็ดขาด)
 @tasks.loop(minutes=10)
 async def check_homework_reminders():
     try:
@@ -87,29 +85,30 @@ async def check_homework_reminders():
         current_time = now_th.time()
         today_date = now_th.strftime('%Y-%m-%d')
         
-        if current_time >= datetime.time(7, 50, 0):
+        # ส่งแจ้งเตือนเมื่อถึงเวลา 07:00 น. เป็นต้นไป
+        if current_time >= datetime.time(7, 0, 0):
             db_conn = sqlite3.connect('homework.db')
             db_cursor = db_conn.cursor()
             
+            # เช็กว่าวันนี้เคยส่งรายงานไปหรือยัง
             db_cursor.execute("SELECT alert_date FROM alert_history WHERE alert_date = ?", (today_date,))
             already_sent = db_cursor.fetchone()
             
             if not already_sent:
-                # ลบงานเก่าที่เลยกำหนดส่งทิ้งทันที
-                db_cursor.execute("DELETE FROM homework WHERE due_date < ?", (today_date,))
-                db_conn.commit()
+                # 🚫 ลบโค้ดคำสั่ง DELETE อัตโนมัติออกไปแล้ว ข้อมูลจะไม่หายเองแน่นอน
                 
+                # ดึงช่องแชททั้งหมดที่เปิดระบบแจ้งงานไว้
                 db_cursor.execute("SELECT channel_id FROM notification_settings WHERE is_enabled = 1")
                 active_channels = db_cursor.fetchall()
                 
                 for (channel_id,) in active_channels:
-                    db_cursor.execute("SELECT id, title, due_date FROM homework WHERE due_date >= ? ORDER BY due_date ASC", (today_date,))
+                    # แสดงงานทั้งหมดในระบบ (ถึงเลยกำหนดส่งไปแล้วแต่ยังไม่ได้ลบแมนนวล ก็จะยังคงอยู่)
+                    db_cursor.execute("SELECT id, title, due_date FROM homework ORDER BY due_date ASC")
                     rows = db_cursor.fetchall()
                     
                     if rows:
                         channel = bot.get_channel(channel_id)
                         if channel:
-                            # 👑 ใช้ Embed สีฟ้า และหัวข้อเดียวกับคำสั่ง !การบ้าน เป๊ะๆ ตามที่น้าต้องการ
                             embed = discord.Embed(
                                 title="📝 รายการการบ้านที่ต้องส่งทั้งหมดตอนนี้",
                                 color=discord.Color.blue(),
@@ -122,25 +121,15 @@ async def check_homework_reminders():
                                     inline=False
                                 )
                             
-                            # ส่งแจ้งเตือนแบบแท็ก @everyone คู่กับกล่องคู่แฝด !การบ้าน
                             await channel.send(content="@everyone", embed=embed)
                 
+                # บันทึกว่าวันนี้ส่งเรียบร้อยแล้ว
                 db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
                 db_conn.commit()
                     
             db_conn.close()
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
-
-# 2. ระบบรีสตาร์ทตัวเองอัตโนมัติทุกๆ 1 ชั่วโมง
-@tasks.loop(hours=1)
-async def auto_restart_bot():
-    if auto_restart_bot.current_loop == 0:
-        return
-    print("🔄 ครบ 1 ชั่วโมง: กำลังรีสตาร์ทบอทอัตโนมัติ...")
-    await bot.close()
-    conn.close()
-    os.execv(sys.executable, ['python'] + sys.argv)
 
 # ==================== COMMANDS ====================
 
@@ -156,7 +145,7 @@ async def set_notification(ctx, action: str = None):
         
         embed = discord.Embed(
             title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ",
-            description="บอทจะคอยรายงานการบ้านค้างทั้งหมดให้ตอน **07:00 น.** ในห้องนี้ทุกวันครับ! (หากไม่มีการบ้านเหลืออยู่เลย ระบบจะเงียบกริบให้ครับ)",
+            description="บอทจะคอยรายงานการบ้านค้างทั้งหมดให้ตอน **07:00 น.** ในห้องนี้ทุกวันครับ (หากไม่มีการบ้านเหลืออยู่เลย ระบบจะเงียบกริบให้ครับ)",
             color=discord.Color.brand_green()
         )
         await ctx.send(embed=embed)
@@ -175,7 +164,7 @@ async def set_notification(ctx, action: str = None):
     else:
         embed = discord.Embed(
             title="❌ วิธีใช้คำสั่งแจ้งงาน",
-            description="กรุณาพิมพ์ระบุสถานะด้วยครับน้า เช่น:\n`!แจ้งงาน เปิด` - เพื่อเปิดระบเตือน 7 โมงเช้า\n`!แจ้งงาน ปิด` - เพื่อปิดระบบเตือน",
+            description="กรุณาพิมพ์ระบุสถานะด้วยครับ เช่น:\n`!แจ้งงาน เปิด` - เพื่อเปิดระบเตือน 7 โมงเช้า\n`!แจ้งงาน ปิด` - เพื่อปิดระบบเตือน",
             color=discord.Color.orange()
         )
         await ctx.reply(embed=embed)
@@ -213,12 +202,10 @@ async def add_homework(ctx, title: str, due_date: str):
 
 @bot.command(name='การบ้าน')
 async def list_homework(ctx):
-    now_th = datetime.datetime.now(tz_thailand)
-    today_date = now_th.strftime('%Y-%m-%d')
-    
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
-    db_cursor.execute("SELECT id, title, due_date FROM homework WHERE due_date >= ? ORDER BY due_date ASC", (today_date,))
+    # ดึงงานทั้งหมดมาแสดงโดยไม่สนใจว่าเลยกำหนดส่งหรือยัง (เพื่อให้สิทธิ์ผู้ใช้ลบด้วยตัวเองแบบแมนนวล)
+    db_cursor.execute("SELECT id, title, due_date FROM homework ORDER BY due_date ASC")
     rows = db_cursor.fetchall()
     db_conn.close()
     
