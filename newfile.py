@@ -87,7 +87,7 @@ async def check_homework_reminders():
         current_time = now_th.time()
         today_date = now_th.strftime('%Y-%m-%d')
         
-        if current_time >= datetime.time(7, 0, 0):
+        if current_time >= datetime.time(7, 30, 0):
             db_conn = sqlite3.connect('homework.db')
             db_cursor = db_conn.cursor()
             
@@ -156,7 +156,7 @@ async def set_notification(ctx, action: str = None):
         
         embed = discord.Embed(
             title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ",
-            description="บอทจะคอยรายงานการบ้านค้างทั้งหมดให้ตอน **07:00 น.** ในห้องนี้ทุกวันครับน้า! (หากไม่มีการบ้านเหลืออยู่เลย ระบบจะเงียบกริบให้ครับ)",
+            description="บอทจะคอยรายงานการบ้านค้างทั้งหมดให้ตอน **07:00 น.** ในห้องนี้ทุกวันครับ! (หากไม่มีการบ้านเหลืออยู่เลย ระบบจะเงียบกริบให้ครับ)",
             color=discord.Color.brand_green()
         )
         await ctx.send(embed=embed)
