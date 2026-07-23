@@ -18,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชัน Slash Commands (รองรับวิชา/รายละเอียด/ไม่บังคับวันส่ง) พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชัน Slash Commands (รองรับ AI อ่านรูปภาพอัปเดตล่าสุด) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -48,7 +48,6 @@ tz_thailand = zoneinfo.ZoneInfo("Asia/Bangkok")
 # ==================== DATABASE SETUP ====================
 conn = sqlite3.connect('homework.db')
 cursor = conn.cursor()
-# อัปเกรดตารางฐานข้อมูลรองรับ "subject" (วิชา) และปรับให้ "due_date" เป็นค่าว่างได้
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS homework (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,9 +73,8 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบ Slash Commands เรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (Vision AI พร้อมใช้งาน) เรียบร้อยแล้วครับน้า!')
     try:
-        # ซิงค์ Slash Commands เข้ากับ Discord
         synced = await bot.tree.sync()
         print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
     except Exception as e:
@@ -163,7 +161,6 @@ async def slash_add_homework(interaction: discord.Interaction, subject: str, det
     formatted_date = None
     if due_date:
         try:
-            # ตรวจสอบรูปแบบวันที่ ถ้าผู้ใช้กรอกมา
             datetime.datetime.strptime(due_date.strip(), '%Y-%m-%d')
             formatted_date = due_date.strip()
         except ValueError:
@@ -279,7 +276,7 @@ def ask_groq_vision(image_base64, user_prompt):
         }
     ]
     response = groq_client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
+        model="llama-3.2-11b-vision-instruct",  # อัปเดตโมเดลเป็นรุ่นล่าสุดแล้ว
         messages=messages
     )
     return response.choices[0].message.content
