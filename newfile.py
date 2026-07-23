@@ -7,6 +7,7 @@ import zoneinfo
 import asyncio
 import os
 import sys
+import base64
 
 # ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
 from flask import Flask
@@ -17,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชันเสถียร (ความจำ AI ต่อเนื่อง) พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชัน Slash Commands (รองรับวิชา/รายละเอียด/ไม่บังคับวันส่ง) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -47,11 +48,13 @@ tz_thailand = zoneinfo.ZoneInfo("Asia/Bangkok")
 # ==================== DATABASE SETUP ====================
 conn = sqlite3.connect('homework.db')
 cursor = conn.cursor()
+# อัปเกรดตารางฐานข้อมูลรองรับ "subject" (วิชา) และปรับให้ "due_date" เป็นค่าว่างได้
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS homework (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT NOT NULL,
         title TEXT NOT NULL,
-        due_date TEXT NOT NULL,
+        due_date TEXT,
         channel_id INTEGER NOT NULL
     )
 ''')
@@ -71,7 +74,14 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (ความจำต่อเนื่อง) เรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบ Slash Commands เรียบร้อยแล้วครับน้า!')
+    try:
+        # ซิงค์ Slash Commands เข้ากับ Discord
+        synced = await bot.tree.sync()
+        print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการ Sync Commands: {e}")
+
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
     if not keep_alive_ping.is_running():
@@ -97,21 +107,22 @@ async def check_homework_reminders():
                 active_channels = db_cursor.fetchall()
                 
                 for (channel_id,) in active_channels:
-                    db_cursor.execute("SELECT id, title, due_date FROM homework ORDER BY due_date ASC")
+                    db_cursor.execute("SELECT id, subject, title, due_date FROM homework ORDER BY due_date ASC")
                     rows = db_cursor.fetchall()
                     
                     if rows:
                         channel = bot.get_channel(channel_id)
                         if channel:
                             embed = discord.Embed(
-                                title="📝 รายการการบ้านที่ต้องส่งทั้งหมดตอนนี้",
+                                title="📝 รายการการบ้านและงานค้างทั้งหมด",
                                 color=discord.Color.blue(),
                                 timestamp=datetime.datetime.now(tz_thailand)
                             )
                             for row in rows:
+                                due_text = row[3] if row[3] else "ไม่ระบุกำหนดส่ง"
                                 embed.add_field(
-                                    name=f"🔹 [ID: {row[0]}] {row[1]}",
-                                    value=f"📅 กำหนดส่ง: **{row[2]}**",
+                                    name=f"🔹 [ID: {row[0]}] วิชา: {row[1]}",
+                                    value=f"📌 รายละเอียด: {row[2]}\n📅 กำหนดส่ง: **{due_text}**",
                                     inline=False
                                 )
                             await channel.send(content="@everyone", embed=embed)
@@ -123,126 +134,121 @@ async def check_homework_reminders():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
 
-# ==================== COMMANDS ====================
+# ==================== SLASH COMMANDS ====================
 
-@bot.command(name='แจ้งงาน')
-async def set_notification(ctx, action: str = None):
-    channel_id = ctx.channel.id
+@bot.tree.command(name="แจ้งงาน", description="เปิดหรือปิดระบบแจ้งเตือนการบ้านตอน 7 โมงเช้า")
+async def slash_set_notification(interaction: discord.Interaction, action: str):
+    if action not in ["เปิด", "ปิด"]:
+        await interaction.response.send_message("❌ กรุณาเลือกสถานะ 'เปิด' หรือ 'ปิด' เท่านั้นครับ", ephemeral=True)
+        return
+
+    channel_id = interaction.channel.id
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
     
-    if action == "เปิด":
-        db_cursor.execute("REPLACE INTO notification_settings (channel_id, is_enabled) VALUES (?, 1)", (channel_id,))
-        db_conn.commit()
-        embed = discord.Embed(
-            title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ",
-            description="บอทจะคอยรายงานการบ้านค้างทั้งหมดให้ตอน **07:00 น.** ในห้องนี้ทุกวันครับ",
-            color=discord.Color.brand_green()
-        )
-        await ctx.send(embed=embed)
-    elif action == "ปิด":
-        db_cursor.execute("REPLACE INTO notification_settings (channel_id, is_enabled) VALUES (?, 0)", (channel_id,))
-        db_conn.commit()
-        embed = discord.Embed(
-            title="🔕 ปิดระบบแจ้งเตือนอัตโนมัติ",
-            description="ปิดการแจ้งเตือนตอน 7 โมงเช้าในห้องนี้เรียบร้อยครับ",
-            color=discord.Color.light_grey()
-        )
-        await ctx.send(embed=embed)
-    else:
-        embed = discord.Embed(
-            title="❌ วิธีใช้คำสั่งแจ้งงาน",
-            description="กรุณาพิมพ์ระบุสถานะด้วยครับ เช่น:\n`!แจ้งงาน เปิด`\n`!แจ้งงาน ปิด`",
-            color=discord.Color.orange()
-        )
-        await ctx.reply(embed=embed)
+    is_val = 1 if action == "เปิด" else 0
+    db_cursor.execute("REPLACE INTO notification_settings (channel_id, is_enabled) VALUES (?, ?)", (channel_id, is_val))
+    db_conn.commit()
     db_conn.close()
-
-@bot.command(name='จด')
-async def add_homework(ctx, title: str, due_date: str):
-    try:
-        datetime.datetime.strptime(due_date, '%Y-%m-%d')
-        db_conn = sqlite3.connect('homework.db')
-        db_cursor = db_conn.cursor()
-        db_cursor.execute(
-            "INSERT INTO homework (title, due_date, channel_id) VALUES (?, ?, ?)",
-            (title, due_date, ctx.channel.id)
-        )
-        db_conn.commit()
-        db_conn.close()
+    
+    if action == "เปิด":
+        embed = discord.Embed(title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ", description="บอทจะรายงานการบ้านเวลา 07:00 น. ในห้องนี้ครับ", color=discord.Color.brand_green())
+    else:
+        embed = discord.Embed(title="🔕 ปิดระบบแจ้งเตือนอัตโนมัติ", description="ปิดการแจ้งเตือนตอน 7 โมงเช้าเรียบร้อยครับ", color=discord.Color.light_grey())
         
-        embed = discord.Embed(
-            title="✅ บันทึกการบ้านสำเร็จ",
-            color=discord.Color.green(),
-            timestamp=datetime.datetime.now(tz_thailand)
-        )
-        embed.add_field(name="📝 ชื่องาน / วิชา", value=title, inline=True)
-        embed.add_field(name="📅 กำหนดส่ง", value=due_date, inline=True)
-        await ctx.reply(embed=embed)
-    except ValueError:
-        embed = discord.Embed(
-            title="❌ บันทึกไม่สำเร็จ",
-            description="รูปแบบวันที่ไม่ถูกต้อง! กรุณาพิมพ์เป็น **ปี-เดือน-วัน** เช่น `!จด การบ้านคณิต 2026-07-15`",
-            color=discord.Color.dark_red()
-        )
-        await ctx.reply(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='การบ้าน')
-async def list_homework(ctx):
+@bot.tree.command(name="จด", description="บันทึกการบ้านหรือชิ้นงานใหม่ (วันส่งไม่บังคับ)")
+async def slash_add_homework(interaction: discord.Interaction, subject: str, detail: str, due_date: str = None):
+    formatted_date = None
+    if due_date:
+        try:
+            # ตรวจสอบรูปแบบวันที่ ถ้าผู้ใช้กรอกมา
+            datetime.datetime.strptime(due_date.strip(), '%Y-%m-%d')
+            formatted_date = due_date.strip()
+        except ValueError:
+            await interaction.response.send_message("❌ รูปแบบวันที่ไม่ถูกต้อง! กรุณากรอกเป็น **ปี-เดือน-วัน** เช่น `2026-07-25` หรือเว้นว่างไว้หากไม่มีกำหนดส่ง", ephemeral=True)
+            return
+
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
-    db_cursor.execute("SELECT id, title, due_date FROM homework ORDER BY due_date ASC")
+    db_cursor.execute(
+        "INSERT INTO homework (subject, title, due_date, channel_id) VALUES (?, ?, ?, ?)",
+        (subject, detail, formatted_date, interaction.channel.id)
+    )
+    db_conn.commit()
+    db_conn.close()
+    
+    embed = discord.Embed(
+        title="✅ บันทึกข้อมูลสำเร็จ",
+        color=discord.Color.green(),
+        timestamp=datetime.datetime.now(tz_thailand)
+    )
+    embed.add_field(name="📚 วิชา", value=subject, inline=True)
+    embed.add_field(name="📌 รายละเอียด", value=detail, inline=False)
+    embed.add_field(name="📅 กำหนดส่ง", value=formatted_date if formatted_date else "ไม่ระบุ (ไม่มีกำหนด)", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="การบ้าน", description="แสดงรายการการบ้านและงานทั้งหมดในระบบ")
+async def slash_list_homework(interaction: discord.Interaction):
+    db_conn = sqlite3.connect('homework.db')
+    db_cursor = db_conn.cursor()
+    db_cursor.execute("SELECT id, subject, title, due_date FROM homework ORDER BY due_date ASC")
     rows = db_cursor.fetchall()
     db_conn.close()
     
     if not rows:
         embed = discord.Embed(
             title="🎉 ยินดีด้วย!",
-            description="**ตอนนี้ไม่มีการบ้านค้างในระบบเลยครับ!** สบายใจได้",
+            description="**ตอนนี้ไม่มีงานค้างในระบบเลยครับ!** สบายใจได้",
             color=discord.Color.gold()
         )
-        await ctx.reply(embed=embed)
+        await interaction.response.send_message(embed=embed)
         return
         
     embed = discord.Embed(
-        title="📝 รายการการบ้านที่ต้องส่งทั้งหมดตอนนี้",
+        title="📝 รายการการบ้านและงานทั้งหมด",
         color=discord.Color.blue(),
         timestamp=datetime.datetime.now(tz_thailand)
     )
     for row in rows:
+        due_text = row[3] if row[3] else "ไม่ระบุกำหนดส่ง"
         embed.add_field(
-            name=f"🔹 [ID: {row[0]}] {row[1]}",
-            value=f"📅 กำหนดส่ง: **{row[2]}**",
+            name=f"🔹 [ID: {row[0]}] วิชา: {row[1]}",
+            value=f"📌 รายละเอียด: {row[2]}\n📅 กำหนดส่ง: **{due_text}**",
             inline=False
         )
-    await ctx.reply(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='ลบ')
-async def delete_homework(ctx, homework_id: int):
+@bot.tree.command(name="ลบ", description="ลบงานออกจากระบบด้วยรหัส ID")
+async def slash_delete_homework(interaction: discord.Interaction, homework_id: int):
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
-    db_cursor.execute("SELECT title FROM homework WHERE id = ?", (homework_id,))
+    db_cursor.execute("SELECT subject, title FROM homework WHERE id = ?", (homework_id,))
     row = db_cursor.fetchone()
     if row:
         db_cursor.execute("DELETE FROM homework WHERE id = ?", (homework_id,))
         db_conn.commit()
+        
         embed = discord.Embed(
-            title="🗑️ ลบการบ้านสำเร็จ",
-            description=f"นำงาน **\"{row[0]}\"** ออกจากระบบเรียบร้อยแล้วครับ!",
+            title="🗑️ ลบงานสำเร็จ",
+            description=f"นำงานวิชา **{row[0]}** ({row[1]}) ออกจากระบบเรียบร้อยแล้วครับ!",
             color=discord.Color.light_grey()
         )
-        await ctx.reply(embed=embed)
+        await interaction.response.send_message(embed=embed)
     else:
         embed = discord.Embed(
             title="❌ ลบไม่สำเร็จ",
-            description=f"ไม่พบการบ้านรหัส ID: {homework_id} ในระบบ",
+            description=f"ไม่พบงานรหัส ID: {homework_id} ในระบบ",
             color=discord.Color.red()
         )
-        await ctx.reply(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     db_conn.close()
 
-# ==================== AI CONVERSATION SYSTEM ====================
-def ask_groq(conversation_history):
+# ==================== AI CONVERSATION & VISION SYSTEM ====================
+
+def ask_groq_text(conversation_history):
     if not groq_client: return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI"
     messages = [{"role": "system", "content": "คุณคือผู้ช่วยตอบคำถามการบ้านภาษาไทยที่สุภาพ กระชับ และเข้าใจบริบทการสนทนาต่อเนื่อง"}]
     messages.extend(conversation_history)
@@ -252,11 +258,36 @@ def ask_groq(conversation_history):
     )
     return response.choices[0].message.content
 
+def ask_groq_vision(image_base64, user_prompt):
+    if not groq_client: return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI"
+    
+    prompt_text = user_prompt if user_prompt else "ช่วยอ่านโจทย์การบ้านจากภาพนี้ แล้วอธิบายวิธีทำและคำตอบอย่างเป็นขั้นตอนให้หน่อยครับ"
+    
+    messages = [
+        {"role": "system", "content": "คุณคือ AI ผู้เชี่ยวชาญการตรวจโจทย์และวิเคราะห์การบ้านจากรูปภาพ จงอ่านโจทย์ อธิบายวิธีทำ และสรุปคำตอบให้ชัดเจน สุภาพ สั้นกระชับ ภาษาไทย"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt_text},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}"
+                    }
+                }
+            ]
+        }
+    ]
+    response = groq_client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
+        messages=messages
+    )
+    return response.choices[0].message.content
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user: return
     
-    # ตรวจสอบว่าเป็นการ Reply ข้อความของบอทหรือไม่
     is_reply_to_bot = False
     if message.reference and message.reference.message_id:
         try:
@@ -269,12 +300,34 @@ async def on_message(message):
     if bot.user.mentioned_in(message) or is_reply_to_bot:
         user_question = message.content.replace(f'<@{bot.user.id}>', '').strip()
         
-        if user_question:
-            async with message.channel.typing():
-                try:
+        has_image = False
+        image_url = None
+        
+        if message.attachments:
+            for attachment in message.attachments:
+                if attachment.content_type and attachment.content_type.startswith('image/'):
+                    has_image = True
+                    image_url = attachment.url
+                    break
+        
+        async with message.channel.typing():
+            try:
+                if has_image:
+                    response_bytes = await asyncio.to_thread(requests.get, image_url)
+                    image_base64 = base64.b64encode(response_bytes.content).decode('utf-8')
+                    
+                    reply_text = await asyncio.to_thread(ask_groq_vision, image_base64, user_question)
+                    
+                    embed = discord.Embed(
+                        title="👁️🤖 ผลการวิเคราะห์โจทย์จากรูปภาพ",
+                        description=reply_text,
+                        color=discord.Color.teal()
+                    )
+                    await message.reply(embed=embed)
+                    
+                elif user_question:
                     conversation_history = []
                     
-                    # ถ้าเป็นการ Reply บอทจะดึงข้อความย้อนหลังขึ้นไปสูงสุด 4 ข้อความมาสร้างบริบท
                     if message.reference and message.reference.message_id:
                         current_ref = message.reference
                         for _ in range(4): 
@@ -297,7 +350,7 @@ async def on_message(message):
                     
                     conversation_history.append({"role": "user", "content": user_question})
                     
-                    reply_text = await asyncio.to_thread(ask_groq, conversation_history)
+                    reply_text = await asyncio.to_thread(ask_groq_text, conversation_history)
                     
                     embed = discord.Embed(
                         title="🤖 คำตอบจาก AI ผู้ช่วยทำการบ้าน",
@@ -305,8 +358,9 @@ async def on_message(message):
                         color=discord.Color.purple()
                     )
                     await message.reply(embed=embed)
-                except Exception as e:
-                    await message.reply(f"❌ ระบบ Groq AI ขัดข้อง: {e}")
+                    
+            except Exception as e:
+                await message.reply(f"❌ ระบบ Groq AI ขัดข้อง: {e}")
                     
     await bot.process_commands(message)
 
