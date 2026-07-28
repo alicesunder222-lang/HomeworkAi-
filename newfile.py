@@ -18,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชัน Slash Commands (ระบบปิงพิมพ์ตอบอิสระ) พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชัน Slash Commands (ระบบปิง Sci-Fi เขียว) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -79,7 +79,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิงพิมพ์ข้อความ) เรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิง Sci-Fi เขียว) เรียบร้อยแล้วครับน้า!')
     try:
         synced = await bot.tree.sync()
         print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
@@ -140,7 +140,7 @@ async def check_homework_reminders():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
 
-# 2. 🔔 ระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมง
+# 2. 🔔 ระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมง (แนว Sci-Fi เขียวเหนี่ยวทรัพย์)
 @tasks.loop(hours=1)
 async def hourly_ping_task():
     try:
@@ -149,19 +149,30 @@ async def hourly_ping_task():
         db_cursor.execute("SELECT channel_id FROM hourly_ping_settings WHERE is_enabled = 1")
         active_channels = db_cursor.fetchall()
         
-        now_th = datetime.datetime.now(tz_thailand)
-        time_str = now_th.strftime('%H:%M น.')
+        # คำนวณค่าปิง (Latency) ของบอทเป็นหน่วย ms
+        ping_ms = round(bot.latency * 1000)
+        
+        # กำหนดเงื่อนไขอิโมจิสถานะ (🟢 < 100ms | 🟡 < 250ms | 🔴 >= 250ms)
+        if ping_ms < 100:
+            status_emoji = "🟢"
+        elif ping_ms < 250:
+            status_emoji = "🟡"
+        else:
+            status_emoji = "🔴"
 
         for (channel_id,) in active_channels:
             channel = bot.get_channel(channel_id)
             if channel:
                 embed = discord.Embed(
-                    title="🔔 แจ้งเตือนประจำชั่วโมง",
-                    description=f"ขณะนี้เวลา **{time_str}** แล้วอย่าลืมเช็กการบ้านหรือพักสายตากันด้วยนะครับ!",
-                    color=discord.Color.orange(),
-                    timestamp=now_th
+                    title="**HomeworkAi**",
+                    color=discord.Color.brand_green(),
+                    timestamp=datetime.datetime.now(tz_thailand)
                 )
-                await channel.send(content="@everyone", embed=embed)
+                embed.add_field(name="Studs", value=f"`{ping_ms} ms`", inline=False)
+                embed.add_field(name="Ok", value=status_emoji, inline=False)
+                
+                await channel.send(embed=embed)
+                
         db_conn.close()
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบปิงชั่วโมง: {e}")
@@ -194,7 +205,7 @@ async def slash_hourly_ping(interaction: discord.Interaction, action: str):
     if action == "เปิด":
         embed = discord.Embed(
             title="🔔 เปิดระบบปิงรายชั่วโมงสำเร็จ",
-            description="บอทจะส่งข้อความแจ้งเตือนปิง `@everyone` ในห้องนี้ **ทุกๆ 1 ชั่วโมง** ครับ",
+            description="บอทจะส่งข้อมูลปิงรายชั่วโมงในห้องนี้ **ทุกๆ 1 ชั่วโมง** ครับ",
             color=discord.Color.brand_green()
         )
     else:
