@@ -18,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชัน Slash Commands (รองรับ AI อ่านรูปภาพอัปเดตล่าสุด) พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชัน Slash Commands (รองรับระบบปิงทุก 1 ชม.) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -64,6 +64,12 @@ cursor.execute('''
     )
 ''')
 cursor.execute('''
+    CREATE TABLE IF NOT EXISTS hourly_ping_settings (
+        channel_id INTEGER PRIMARY KEY,
+        is_enabled INTEGER DEFAULT 0
+    )
+''')
+cursor.execute('''
     CREATE TABLE IF NOT EXISTS alert_history (
         alert_date TEXT PRIMARY KEY
     )
@@ -73,7 +79,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (Vision AI พร้อมใช้งาน) เรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิงทุก 1 ชม.) เรียบร้อยแล้วครับน้า!')
     try:
         synced = await bot.tree.sync()
         print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
@@ -82,10 +88,12 @@ async def on_ready():
 
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
+    if not hourly_ping_task.is_running():
+        hourly_ping_task.start()
     if not keep_alive_ping.is_running():
         keep_alive_ping.start()
 
-# 1. 👑 ระบบรายงานการบ้านค้างตอนเช้า
+# 1. 👑 ระบบรายงานการบ้านค้างตอน 7 โมงเช้า
 @tasks.loop(minutes=10)
 async def check_homework_reminders():
     try:
@@ -132,7 +140,72 @@ async def check_homework_reminders():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
 
+# 2. 🔔 ระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมง
+@tasks.loop(hours=1)
+async def hourly_ping_task():
+    try:
+        db_conn = sqlite3.connect('homework.db')
+        db_cursor = db_conn.cursor()
+        db_cursor.execute("SELECT channel_id FROM hourly_ping_settings WHERE is_enabled = 1")
+        active_channels = db_cursor.fetchall()
+        
+        now_th = datetime.datetime.now(tz_thailand)
+        time_str = now_th.strftime('%H:%M น.')
+
+        for (channel_id,) in active_channels:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                embed = discord.Embed(
+                    title="🔔 แจ้งเตือนประจำชั่วโมง",
+                    description=f"ขณะนี้เวลา **{time_str}** แล้วอย่าลืมเช็กการบ้านหรือพักสายตากันด้วยนะครับ!",
+                    color=discord.Color.orange(),
+                    timestamp=now_th
+                )
+                await channel.send(content="@everyone", embed=embed)
+        db_conn.close()
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในระบบปิงชั่วโมง: {e}")
+
+# ให้ระบบปิงชั่วโมงเริ่มตอนต้นชั่วโมงถัดไปพอดี (เช่น 13:00, 14:00)
+@hourly_ping_task.before_loop
+async def before_hourly_ping():
+    now = datetime.datetime.now(tz_thailand)
+    next_hour = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    wait_seconds = (next_hour - now).total_seconds()
+    print(f"⏰ ระบบปิงชั่วโมงจะเริ่มในอีก {int(wait_seconds)} วินาที (เวลา {next_hour.strftime('%H:%M')} น.)")
+    await asyncio.sleep(wait_seconds)
+
 # ==================== SLASH COMMANDS ====================
+
+@bot.tree.command(name="ปิง", description="เปิดหรือปิดระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมงในห้องนี้")
+async def slash_hourly_ping(interaction: discord.Interaction, status: str):
+    if status not in ["เปิด", "ปิด"]:
+        await interaction.response.send_message("❌ กรุณาพิมพ์เลือก 'เปิด' หรือ 'ปิด' เท่านั้นครับ", ephemeral=True)
+        return
+
+    channel_id = interaction.channel.id
+    db_conn = sqlite3.connect('homework.db')
+    db_cursor = db_conn.cursor()
+    
+    is_val = 1 if status == "เปิด" else 0
+    db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled) VALUES (?, ?)", (channel_id, is_val))
+    db_conn.commit()
+    db_conn.close()
+    
+    if status == "เปิด":
+        embed = discord.Embed(
+            title="🔔 เปิดระบบปิงรายชั่วโมงสำเร็จ",
+            description="บอทจะส่งข้อความแจ้งเตือนปิง `@everyone` ในห้องนี้ **ทุกๆ 1 ชั่วโมง** ครับ",
+            color=discord.Color.brand_green()
+        )
+    else:
+        embed = discord.Embed(
+            title="🔕 ปิดระบบปิงรายชั่วโมงสำเร็จ",
+            description="ปิดการแจ้งเตือนปิงรายชั่วโมงในห้องนี้เรียบร้อยครับ",
+            color=discord.Color.light_grey()
+        )
+        
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="แจ้งงาน", description="เปิดหรือปิดระบบแจ้งเตือนการบ้านตอน 7 โมงเช้า")
 async def slash_set_notification(interaction: discord.Interaction, action: str):
@@ -276,7 +349,7 @@ def ask_groq_vision(image_base64, user_prompt):
         }
     ]
     response = groq_client.chat.completions.create(
-        model="llama-3.2-11b-vision-instruct",  # อัปเดตโมเดลเป็นรุ่นล่าสุดแล้ว
+        model="llama-3.2-11b-vision-instruct",
         messages=messages
     )
     return response.choices[0].message.content
