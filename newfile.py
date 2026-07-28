@@ -18,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชัน Slash Commands (รองรับระบบปิงทุก 1 ชม.) พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชัน Slash Commands (ระบบปิงพิมพ์ตอบอิสระ) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -79,7 +79,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิงทุก 1 ชม.) เรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิงพิมพ์ข้อความ) เรียบร้อยแล้วครับน้า!')
     try:
         synced = await bot.tree.sync()
         print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
@@ -166,7 +166,6 @@ async def hourly_ping_task():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบปิงชั่วโมง: {e}")
 
-# ให้ระบบปิงชั่วโมงเริ่มตอนต้นชั่วโมงถัดไปพอดี (เช่น 13:00, 14:00)
 @hourly_ping_task.before_loop
 async def before_hourly_ping():
     now = datetime.datetime.now(tz_thailand)
@@ -177,22 +176,22 @@ async def before_hourly_ping():
 
 # ==================== SLASH COMMANDS ====================
 
-@bot.tree.command(name="ปิง", description="เปิดหรือปิดระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมงในห้องนี้")
-async def slash_hourly_ping(interaction: discord.Interaction, status: str):
-    if status not in ["เปิด", "ปิด"]:
-        await interaction.response.send_message("❌ กรุณาพิมพ์เลือก 'เปิด' หรือ 'ปิด' เท่านั้นครับ", ephemeral=True)
+@bot.tree.command(name="ปิง", description="เปิดหรือปิดระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมง (พิมพ์: เปิด หรือ ปิด)")
+async def slash_hourly_ping(interaction: discord.Interaction, action: str):
+    if action not in ["เปิด", "ปิด"]:
+        await interaction.response.send_message("❌ กรุณาพิมพ์คำว่า **เปิด** หรือ **ปิด** เท่านั้นครับ", ephemeral=True)
         return
 
     channel_id = interaction.channel.id
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
     
-    is_val = 1 if status == "เปิด" else 0
+    is_val = 1 if action == "เปิด" else 0
     db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled) VALUES (?, ?)", (channel_id, is_val))
     db_conn.commit()
     db_conn.close()
     
-    if status == "เปิด":
+    if action == "เปิด":
         embed = discord.Embed(
             title="🔔 เปิดระบบปิงรายชั่วโมงสำเร็จ",
             description="บอทจะส่งข้อความแจ้งเตือนปิง `@everyone` ในห้องนี้ **ทุกๆ 1 ชั่วโมง** ครับ",
@@ -443,4 +442,3 @@ if __name__ == "__main__":
         bot.run(DISCORD_TOKEN)
     else:
         print("❌ ไม่พบ DISCORD_TOKEN ในระบบ")
-
