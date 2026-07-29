@@ -18,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "บอทการบ้าน เวอร์ชัน Slash Commands (ระบบปิง Sci-Fi เขียว) พร้อมรัน 24 ชั่วโมง!"
+    return "บอทการบ้าน เวอร์ชัน Slash Commands (ระบบปิง Edit แบบไม่รกแชท) พร้อมรัน 24 ชั่วโมง!"
 
 def run_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -66,7 +66,8 @@ cursor.execute('''
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS hourly_ping_settings (
         channel_id INTEGER PRIMARY KEY,
-        is_enabled INTEGER DEFAULT 0
+        is_enabled INTEGER DEFAULT 0,
+        message_id INTEGER DEFAULT NULL
     )
 ''')
 cursor.execute('''
@@ -79,7 +80,7 @@ conn.commit()
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิง Sci-Fi เขียว) เรียบร้อยแล้วครับน้า!')
+    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิง Edit ข้อความเดิม) เรียบร้อยแล้วครับน้า!')
     try:
         synced = await bot.tree.sync()
         print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
@@ -140,14 +141,14 @@ async def check_homework_reminders():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
 
-# 2. 🔔 ระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมง (แนว Sci-Fi เขียวเหนี่ยวทรัพย์)
+# 2. 🔔 ระบบอัปเดตปิงทุกๆ 1 ชั่วโมง (แก้ไขข้อความเดิม ไม่รกแชท)
 @tasks.loop(hours=1)
 async def hourly_ping_task():
     try:
         db_conn = sqlite3.connect('homework.db')
         db_cursor = db_conn.cursor()
-        db_cursor.execute("SELECT channel_id FROM hourly_ping_settings WHERE is_enabled = 1")
-        active_channels = db_cursor.fetchall()
+        db_cursor.execute("SELECT channel_id, message_id FROM hourly_ping_settings WHERE is_enabled = 1")
+        active_settings = db_cursor.fetchall()
         
         # คำนวณค่าปิง (Latency) ของบอทเป็นหน่วย ms
         ping_ms = round(bot.latency * 1000)
@@ -160,7 +161,7 @@ async def hourly_ping_task():
         else:
             status_emoji = "🔴"
 
-        for (channel_id,) in active_channels:
+        for channel_id, msg_id in active_settings:
             channel = bot.get_channel(channel_id)
             if channel:
                 embed = discord.Embed(
@@ -171,7 +172,21 @@ async def hourly_ping_task():
                 embed.add_field(name="Studs", value=f"`{ping_ms} ms`", inline=False)
                 embed.add_field(name="Ok", value=status_emoji, inline=False)
                 
-                await channel.send(embed=embed)
+                target_message = None
+                if msg_id:
+                    try:
+                        target_message = await channel.fetch_message(msg_id)
+                    except:
+                        target_message = None
+                
+                if target_message:
+                    # ถ้ามีข้อความเดิมอยู่แล้ว ทำการแก้ไขข้อความ (Edit) ทันที
+                    await target_message.edit(embed=embed)
+                else:
+                    # ถ้ายังไม่มี (พึ่งเปิด หรือข้อความเก่าหายไป) ให้ส่งใหม่แล้วบันทึก ID
+                    new_msg = await channel.send(embed=embed)
+                    db_cursor.execute("UPDATE hourly_ping_settings SET message_id = ? WHERE channel_id = ?", (new_msg.id, channel_id))
+                    db_conn.commit()
                 
         db_conn.close()
     except Exception as e:
@@ -187,7 +202,7 @@ async def before_hourly_ping():
 
 # ==================== SLASH COMMANDS ====================
 
-@bot.tree.command(name="ปิง", description="เปิดหรือปิดระบบแจ้งเตือนปิงทุกๆ 1 ชั่วโมง (พิมพ์: เปิด หรือ ปิด)")
+@bot.tree.command(name="ปิง", description="เปิดหรือปิดระบบอัปเดตปิงรายชั่วโมง (พิมพ์: เปิด หรือ ปิด)")
 async def slash_hourly_ping(interaction: discord.Interaction, action: str):
     if action not in ["เปิด", "ปิด"]:
         await interaction.response.send_message("❌ กรุณาพิมพ์คำว่า **เปิด** หรือ **ปิด** เท่านั้นครับ", ephemeral=True)
@@ -197,25 +212,47 @@ async def slash_hourly_ping(interaction: discord.Interaction, action: str):
     db_conn = sqlite3.connect('homework.db')
     db_cursor = db_conn.cursor()
     
-    is_val = 1 if action == "เปิด" else 0
-    db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled) VALUES (?, ?)", (channel_id, is_val))
-    db_conn.commit()
-    db_conn.close()
-    
     if action == "เปิด":
+        # คำนวณค่าปิงตอนเปิดใช้งาน
+        ping_ms = round(bot.latency * 1000)
+        status_emoji = "🟢" if ping_ms < 100 else ("🟡" if ping_ms < 250 else "🔴")
+        
         embed = discord.Embed(
-            title="🔔 เปิดระบบปิงรายชั่วโมงสำเร็จ",
-            description="บอทจะส่งข้อมูลปิงรายชั่วโมงในห้องนี้ **ทุกๆ 1 ชั่วโมง** ครับ",
-            color=discord.Color.brand_green()
+            title="**HomeworkAi**",
+            color=discord.Color.brand_green(),
+            timestamp=datetime.datetime.now(tz_thailand)
         )
+        embed.add_field(name="Studs", value=f"`{ping_ms} ms`", inline=False)
+        embed.add_field(name="Ok", value=status_emoji, inline=False)
+        
+        # ส่งข้อความแรกเพื่อปักหมุดไว้แก้ไข
+        await interaction.response.send_message("🔔 กำลังเปิดระบบอัปเดตปิงรายชั่วโมง...", ephemeral=True)
+        sent_msg = await interaction.channel.send(embed=embed)
+        
+        db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled, message_id) VALUES (?, 1, ?)", (channel_id, sent_msg.id))
+        db_conn.commit()
     else:
+        # ดึงข้อความเก่ามาลบหรือปล่อยทิ้งไว้ (ที่นี่เลือกเคลียร์ค่าใน DB)
+        db_cursor.execute("SELECT message_id FROM hourly_ping_settings WHERE channel_id = ?", (channel_id,))
+        row = db_cursor.fetchone()
+        if row and row[0]:
+            try:
+                msg = await interaction.channel.fetch_message(row[0])
+                await msg.delete()
+            except:
+                pass
+                
+        db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled, message_id) VALUES (?, 0, NULL)", (channel_id,))
+        db_conn.commit()
+        
         embed = discord.Embed(
             title="🔕 ปิดระบบปิงรายชั่วโมงสำเร็จ",
-            description="ปิดการแจ้งเตือนปิงรายชั่วโมงในห้องนี้เรียบร้อยครับ",
+            description="ปิดการอัปเดตปิงรายชั่วโมงและลบกล่องสถานะออกเรียบร้อยครับ",
             color=discord.Color.light_grey()
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         
-    await interaction.response.send_message(embed=embed)
+    db_conn.close()
 
 @bot.tree.command(name="แจ้งงาน", description="เปิดหรือปิดระบบแจ้งเตือนการบ้านตอน 7 โมงเช้า")
 async def slash_set_notification(interaction: discord.Interaction, action: str):
