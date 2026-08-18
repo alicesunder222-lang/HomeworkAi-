@@ -1,3 +1,8 @@
+import sys, types
+# แก้ปัญหา audioop หายบน Python 3.14
+if 'audioop' not in sys.modules:
+    sys.modules['audioop'] = types.ModuleType('audioop')
+
 import discord
 from discord.ext import commands, tasks
 from groq import Groq
@@ -5,22 +10,14 @@ import sqlite3
 from datetime import datetime
 import asyncio
 import os
-import json  # เพิ่มโมดูลอ่านไฟล์ JSON
 
-# ==================== CONFIG & JSON SETUP ====================
+# ==================== CONFIGURATION ====================
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
-# ดึงค่า Channel ID จากไฟล์ config.json
-CONFIG_FILE = 'config.json'
-if os.path.exists(CONFIG_FILE):
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-else:
-    config = {"ANNOUNCE_CHANNEL_ID": 0, "HOMEWORK_CHANNEL_ID": 0}
-
-ANNOUNCE_CHANNEL_ID = config.get("ANNOUNCE_CHANNEL_ID", 0)
-HOMEWORK_CHANNEL_ID = config.get("HOMEWORK_CHANNEL_ID", 0)
+# ดึง ID ห้องโดยตรงจาก Environment Variables
+ANNOUNCE_CHANNEL_ID = int(os.environ.get('ANNOUNCE_CHANNEL_ID', 0))
+HOMEWORK_CHANNEL_ID = int(os.environ.get('HOMEWORK_CHANNEL_ID', 0))
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
@@ -50,16 +47,16 @@ init_db()
 async def on_ready():
     print(f'บอท {bot.user.name} ออนไลน์แล้ว!')
     
-    # 🟢 1. แจ้งเตือนเมื่อบอทรีสตาร์ท/ออนไลน์สำเร็จ
+    # แจ้งเตือนปิงสถานะเมื่อบอทรีสตาร์ท
     if ANNOUNCE_CHANNEL_ID != 0:
         announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
         if announce_channel:
-            await announce_channel.send("🟢 **[System Status]** บอทรีสตาร์ทและกลับมาออนไลน์เรียบร้อยแล้วพร้อมใช้งานครับ! ⚡")
+            await announce_channel.send("🟢 **[System Status]** บอทออนไลน์พร้อมใช้งานแล้วครับ!")
 
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
 
-# 🔴 2. เช็กการบ้านและส่งเข้าห้องที่ตั้งค่าไว้
+# เช็กการบ้านอัตโนมัติ
 @tasks.loop(hours=1)
 async def check_homework_reminders():
     try:
@@ -73,9 +70,7 @@ async def check_homework_reminders():
             rows = cursor.fetchall()
             
             if rows:
-                # ส่งเข้าห้องการบ้านตามที่ระบุใน config.json
                 target_channel = bot.get_channel(HOMEWORK_CHANNEL_ID)
-                
                 for row in rows:
                     hw_id, title = row
                     if target_channel:
@@ -95,7 +90,6 @@ async def add_homework(ctx, title: str, due_date: str):
         datetime.strptime(due_date, '%Y-%m-%d')
         conn = sqlite3.connect('homework.db')
         cursor = conn.cursor()
-        # บันทึกโดยใช้ช่อง HOMEWORK_CHANNEL_ID จาก config เป็นหลัก
         channel_to_save = HOMEWORK_CHANNEL_ID if HOMEWORK_CHANNEL_ID != 0 else ctx.channel.id
         cursor.execute(
             "INSERT INTO homework (title, due_date, channel_id) VALUES (?, ?, ?)",
@@ -133,9 +127,9 @@ async def delete_homework(ctx, homework_id: int):
     if row:
         cursor.execute("DELETE FROM homework WHERE id = ?", (homework_id,))
         conn.commit()
-        await ctx.reply(f"🗑️ ลบการบ้านงาน **\"{row[0]}\"** เรียบร้อยแล้วครับ!")
+        await ctx.reply(f"🗑️ ลบการบ้านงาน **\"{row[0]}\"** เรียบร้อยแล้ว!")
     else:
-        await ctx.reply(f"❌ ไม่พบการบ้านรหัส ID: {homework_id} ในระบบ")
+        await ctx.reply(f"❌ ไม่พบการบ้านรหัส ID: {homework_id}")
         
     conn.close()
 
