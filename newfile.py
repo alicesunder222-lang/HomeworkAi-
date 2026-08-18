@@ -2,40 +2,25 @@ import discord
 from discord.ext import commands, tasks
 from groq import Groq
 import sqlite3
-import datetime
-import zoneinfo
+from datetime import datetime
 import asyncio
 import os
-import sys
-import base64
+import json  # เพิ่มโมดูลอ่านไฟล์ JSON
 
-# ระบบสร้างเว็บจิ๋ว และระบบสะกิดตัวเองทุกๆ 1 นาที จบงานใน Render ตัวเดียว
-from flask import Flask
-from threading import Thread
-import requests
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "บอทการบ้าน เวอร์ชัน Slash Commands (ระบบปิง Edit แบบไม่รกแชท) พร้อมรัน 24 ชั่วโมง!"
-
-def run_web_server():
-    app.run(host='0.0.0.0', port=10000)
-
-@tasks.loop(minutes=1)
-async def keep_alive_ping():
-    my_url = os.environ.get('MY_BOT_URL')
-    if my_url:
-        try:
-            await asyncio.to_thread(requests.get, my_url)
-            print("🔄 [Self-Ping] ยิงสะกิดตัวเองสำเร็จ (ทุก 1 นาที) เครื่องตื่นตัวสุดๆ!")
-        except Exception as e:
-            print(f"❌ [Self-Ping] เคาะเรียกตัวเองไม่สำเร็จ: {e}")
-
-# ==================== CONFIGURATION ====================
+# ==================== CONFIG & JSON SETUP ====================
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
+
+# ดึงค่า Channel ID จากไฟล์ config.json
+CONFIG_FILE = 'config.json'
+if os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+else:
+    config = {"ANNOUNCE_CHANNEL_ID": 0, "HOMEWORK_CHANNEL_ID": 0}
+
+ANNOUNCE_CHANNEL_ID = config.get("ANNOUNCE_CHANNEL_ID", 0)
+HOMEWORK_CHANNEL_ID = config.get("HOMEWORK_CHANNEL_ID", 0)
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
@@ -43,450 +28,149 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-tz_thailand = zoneinfo.ZoneInfo("Asia/Bangkok")
-
 # ==================== DATABASE SETUP ====================
-conn = sqlite3.connect('homework.db')
-cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS homework (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        subject TEXT NOT NULL,
-        title TEXT NOT NULL,
-        due_date TEXT,
-        channel_id INTEGER NOT NULL
-    )
-''')
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS notification_settings (
-        channel_id INTEGER PRIMARY KEY,
-        is_enabled INTEGER DEFAULT 0
-    )
-''')
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS hourly_ping_settings (
-        channel_id INTEGER PRIMARY KEY,
-        is_enabled INTEGER DEFAULT 0,
-        message_id INTEGER DEFAULT NULL
-    )
-''')
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS alert_history (
-        alert_date TEXT PRIMARY KEY
-    )
-''')
-conn.commit()
+def init_db():
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS homework (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            channel_id INTEGER NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # ==================== BOT EVENTS & TASKS ====================
 @bot.event
 async def on_ready():
-    print(f'บอท {bot.user.name} ออนไลน์ระบบเสถียร (พร้อมระบบปิง Edit ข้อความเดิม) เรียบร้อยแล้วครับน้า!')
-    try:
-        synced = await bot.tree.sync()
-        print(f'Sync Slash Commands สำเร็จจำนวน {len(synced)} คำสั่ง')
-    except Exception as e:
-        print(f"เกิดข้อผิดพลาดในการ Sync Commands: {e}")
+    print(f'บอท {bot.user.name} ออนไลน์แล้ว!')
+    
+    # 🟢 1. แจ้งเตือนเมื่อบอทรีสตาร์ท/ออนไลน์สำเร็จ
+    if ANNOUNCE_CHANNEL_ID != 0:
+        announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+        if announce_channel:
+            await announce_channel.send("🟢 **[System Status]** บอทรีสตาร์ทและกลับมาออนไลน์เรียบร้อยแล้วพร้อมใช้งานครับ! ⚡")
 
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
-    if not hourly_ping_task.is_running():
-        hourly_ping_task.start()
-    if not keep_alive_ping.is_running():
-        keep_alive_ping.start()
 
-# 1. 👑 ระบบรายงานการบ้านค้างตอน 7 โมงเช้า
-@tasks.loop(minutes=10)
+# 🔴 2. เช็กการบ้านและส่งเข้าห้องที่ตั้งค่าไว้
+@tasks.loop(hours=1)
 async def check_homework_reminders():
     try:
-        now_th = datetime.datetime.now(tz_thailand)
-        current_time = now_th.time()
-        today_date = now_th.strftime('%Y-%m-%d')
-        
-        if current_time >= datetime.time(7, 0, 0):
-            db_conn = sqlite3.connect('homework.db')
-            db_cursor = db_conn.cursor()
+        now = datetime.now()
+        if now.hour == 8:  # แจ้งเตือนตอน 8 โมงเช้า
+            today = now.strftime('%Y-%m-%d')
+            conn = sqlite3.connect('homework.db')
+            cursor = conn.cursor()
             
-            db_cursor.execute("SELECT alert_date FROM alert_history WHERE alert_date = ?", (today_date,))
-            already_sent = db_cursor.fetchone()
+            cursor.execute("SELECT id, title FROM homework WHERE due_date = ?", (today,))
+            rows = cursor.fetchall()
             
-            if not already_sent:
-                db_cursor.execute("SELECT channel_id FROM notification_settings WHERE is_enabled = 1")
-                active_channels = db_cursor.fetchall()
+            if rows:
+                # ส่งเข้าห้องการบ้านตามที่ระบุใน config.json
+                target_channel = bot.get_channel(HOMEWORK_CHANNEL_ID)
                 
-                for (channel_id,) in active_channels:
-                    db_cursor.execute("SELECT id, subject, title, due_date FROM homework ORDER BY due_date ASC")
-                    rows = db_cursor.fetchall()
-                    
-                    if rows:
-                        channel = bot.get_channel(channel_id)
-                        if channel:
-                            embed = discord.Embed(
-                                title="📝 รายการการบ้านและงานค้างทั้งหมด",
-                                color=discord.Color.blue(),
-                                timestamp=datetime.datetime.now(tz_thailand)
-                            )
-                            for row in rows:
-                                due_text = row[3] if row[3] else "ไม่ระบุกำหนดส่ง"
-                                embed.add_field(
-                                    name=f"🔹 [ID: {row[0]}] วิชา: {row[1]}",
-                                    value=f"📌 รายละเอียด: {row[2]}\n📅 กำหนดส่ง: **{due_text}**",
-                                    inline=False
-                                )
-                            await channel.send(content="@everyone", embed=embed)
-                
-                db_cursor.execute("INSERT INTO alert_history (alert_date) VALUES (?)", (today_date,))
-                db_conn.commit()
-                    
-            db_conn.close()
+                for row in rows:
+                    hw_id, title = row
+                    if target_channel:
+                        await target_channel.send(f"🚨 **[แจ้งเตือนการบ้าน]** @everyone \nงาน: **{title}** มีกำหนดส่งภายใน **วันนี้แล้วนะ!** 📝🔥")
+                    cursor.execute("DELETE FROM homework WHERE id = ?", (hw_id,))
+            
+            conn.commit()
+            conn.close()
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือนอัตโนมัติ: {e}")
+        print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือน: {e}")
 
-# 2. 🔔 ระบบอัปเดตปิงทุกๆ 1 ชั่วโมง (แก้ไขข้อความเดิม ไม่รกแชท)
-@tasks.loop(hours=1)
-async def hourly_ping_task():
+# ==================== COMMANDS ====================
+
+@bot.command(name='จด')
+async def add_homework(ctx, title: str, due_date: str):
     try:
-        db_conn = sqlite3.connect('homework.db')
-        db_cursor = db_conn.cursor()
-        db_cursor.execute("SELECT channel_id, message_id FROM hourly_ping_settings WHERE is_enabled = 1")
-        active_settings = db_cursor.fetchall()
-        
-        # คำนวณค่าปิง (Latency) ของบอทเป็นหน่วย ms
-        ping_ms = round(bot.latency * 1000)
-        
-        # กำหนดเงื่อนไขอิโมจิสถานะ (🟢 < 100ms | 🟡 < 250ms | 🔴 >= 250ms)
-        if ping_ms < 100:
-            status_emoji = "🟢"
-        elif ping_ms < 250:
-            status_emoji = "🟡"
-        else:
-            status_emoji = "🔴"
-
-        for channel_id, msg_id in active_settings:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                embed = discord.Embed(
-                    title="**HomeworkAi**",
-                    color=discord.Color.brand_green(),
-                    timestamp=datetime.datetime.now(tz_thailand)
-                )
-                embed.add_field(name="Studs", value=f"`{ping_ms} ms`", inline=False)
-                embed.add_field(name="Ok", value=status_emoji, inline=False)
-                
-                target_message = None
-                if msg_id:
-                    try:
-                        target_message = await channel.fetch_message(msg_id)
-                    except:
-                        target_message = None
-                
-                if target_message:
-                    # ถ้ามีข้อความเดิมอยู่แล้ว ทำการแก้ไขข้อความ (Edit) ทันที
-                    await target_message.edit(embed=embed)
-                else:
-                    # ถ้ายังไม่มี (พึ่งเปิด หรือข้อความเก่าหายไป) ให้ส่งใหม่แล้วบันทึก ID
-                    new_msg = await channel.send(embed=embed)
-                    db_cursor.execute("UPDATE hourly_ping_settings SET message_id = ? WHERE channel_id = ?", (new_msg.id, channel_id))
-                    db_conn.commit()
-                
-        db_conn.close()
-    except Exception as e:
-        print(f"เกิดข้อผิดพลาดในระบบปิงชั่วโมง: {e}")
-
-@hourly_ping_task.before_loop
-async def before_hourly_ping():
-    now = datetime.datetime.now(tz_thailand)
-    next_hour = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    wait_seconds = (next_hour - now).total_seconds()
-    print(f"⏰ ระบบปิงชั่วโมงจะเริ่มในอีก {int(wait_seconds)} วินาที (เวลา {next_hour.strftime('%H:%M')} น.)")
-    await asyncio.sleep(wait_seconds)
-
-# ==================== SLASH COMMANDS ====================
-
-@bot.tree.command(name="ปิง", description="เปิดหรือปิดระบบอัปเดตปิงรายชั่วโมง (พิมพ์: เปิด หรือ ปิด)")
-async def slash_hourly_ping(interaction: discord.Interaction, action: str):
-    if action not in ["เปิด", "ปิด"]:
-        await interaction.response.send_message("❌ กรุณาพิมพ์คำว่า **เปิด** หรือ **ปิด** เท่านั้นครับ", ephemeral=True)
-        return
-
-    channel_id = interaction.channel.id
-    db_conn = sqlite3.connect('homework.db')
-    db_cursor = db_conn.cursor()
-    
-    if action == "เปิด":
-        # คำนวณค่าปิงตอนเปิดใช้งาน
-        ping_ms = round(bot.latency * 1000)
-        status_emoji = "🟢" if ping_ms < 100 else ("🟡" if ping_ms < 250 else "🔴")
-        
-        embed = discord.Embed(
-            title="**HomeworkAi**",
-            color=discord.Color.brand_green(),
-            timestamp=datetime.datetime.now(tz_thailand)
+        datetime.strptime(due_date, '%Y-%m-%d')
+        conn = sqlite3.connect('homework.db')
+        cursor = conn.cursor()
+        # บันทึกโดยใช้ช่อง HOMEWORK_CHANNEL_ID จาก config เป็นหลัก
+        channel_to_save = HOMEWORK_CHANNEL_ID if HOMEWORK_CHANNEL_ID != 0 else ctx.channel.id
+        cursor.execute(
+            "INSERT INTO homework (title, due_date, channel_id) VALUES (?, ?, ?)",
+            (title, due_date, channel_to_save)
         )
-        embed.add_field(name="Studs", value=f"`{ping_ms} ms`", inline=False)
-        embed.add_field(name="Ok", value=status_emoji, inline=False)
-        
-        # ส่งข้อความแรกเพื่อปักหมุดไว้แก้ไข
-        await interaction.response.send_message("🔔 กำลังเปิดระบบอัปเดตปิงรายชั่วโมง...", ephemeral=True)
-        sent_msg = await interaction.channel.send(embed=embed)
-        
-        db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled, message_id) VALUES (?, 1, ?)", (channel_id, sent_msg.id))
-        db_conn.commit()
-    else:
-        # ดึงข้อความเก่ามาลบหรือปล่อยทิ้งไว้ (ที่นี่เลือกเคลียร์ค่าใน DB)
-        db_cursor.execute("SELECT message_id FROM hourly_ping_settings WHERE channel_id = ?", (channel_id,))
-        row = db_cursor.fetchone()
-        if row and row[0]:
-            try:
-                msg = await interaction.channel.fetch_message(row[0])
-                await msg.delete()
-            except:
-                pass
-                
-        db_cursor.execute("REPLACE INTO hourly_ping_settings (channel_id, is_enabled, message_id) VALUES (?, 0, NULL)", (channel_id,))
-        db_conn.commit()
-        
-        embed = discord.Embed(
-            title="🔕 ปิดระบบปิงรายชั่วโมงสำเร็จ",
-            description="ปิดการอัปเดตปิงรายชั่วโมงและลบกล่องสถานะออกเรียบร้อยครับ",
-            color=discord.Color.light_grey()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-    db_conn.close()
+        conn.commit()
+        conn.close()
+        await ctx.reply(f"✅ บันทึกสำเร็จ: **{title}** \n📅 กำหนดส่ง: {due_date}")
+    except ValueError:
+        await ctx.reply("❌ รูปแบบวันที่ไม่ถูกต้อง! กรุณาพิมพ์เป็น **ปี-เดือน-วัน** เช่น `!จด การบ้านคณิต 2026-07-15`")
 
-@bot.tree.command(name="แจ้งงาน", description="เปิดหรือปิดระบบแจ้งเตือนการบ้านตอน 7 โมงเช้า")
-async def slash_set_notification(interaction: discord.Interaction, action: str):
-    if action not in ["เปิด", "ปิด"]:
-        await interaction.response.send_message("❌ กรุณาเลือกสถานะ 'เปิด' หรือ 'ปิด' เท่านั้นครับ", ephemeral=True)
-        return
-
-    channel_id = interaction.channel.id
-    db_conn = sqlite3.connect('homework.db')
-    db_cursor = db_conn.cursor()
-    
-    is_val = 1 if action == "เปิด" else 0
-    db_cursor.execute("REPLACE INTO notification_settings (channel_id, is_enabled) VALUES (?, ?)", (channel_id, is_val))
-    db_conn.commit()
-    db_conn.close()
-    
-    if action == "เปิด":
-        embed = discord.Embed(title="✅ เปิดระบบแจ้งเตือนอัตโนมัติสำเร็จ", description="บอทจะรายงานการบ้านเวลา 07:00 น. ในห้องนี้ครับ", color=discord.Color.brand_green())
-    else:
-        embed = discord.Embed(title="🔕 ปิดระบบแจ้งเตือนอัตโนมัติ", description="ปิดการแจ้งเตือนตอน 7 โมงเช้าเรียบร้อยครับ", color=discord.Color.light_grey())
-        
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="จด", description="บันทึกการบ้านหรือชิ้นงานใหม่ (วันส่งไม่บังคับ)")
-async def slash_add_homework(interaction: discord.Interaction, subject: str, detail: str, due_date: str = None):
-    formatted_date = None
-    if due_date:
-        try:
-            datetime.datetime.strptime(due_date.strip(), '%Y-%m-%d')
-            formatted_date = due_date.strip()
-        except ValueError:
-            await interaction.response.send_message("❌ รูปแบบวันที่ไม่ถูกต้อง! กรุณากรอกเป็น **ปี-เดือน-วัน** เช่น `2026-07-25` หรือเว้นว่างไว้หากไม่มีกำหนดส่ง", ephemeral=True)
-            return
-
-    db_conn = sqlite3.connect('homework.db')
-    db_cursor = db_conn.cursor()
-    db_cursor.execute(
-        "INSERT INTO homework (subject, title, due_date, channel_id) VALUES (?, ?, ?, ?)",
-        (subject, detail, formatted_date, interaction.channel.id)
-    )
-    db_conn.commit()
-    db_conn.close()
-    
-    embed = discord.Embed(
-        title="✅ บันทึกข้อมูลสำเร็จ",
-        color=discord.Color.green(),
-        timestamp=datetime.datetime.now(tz_thailand)
-    )
-    embed.add_field(name="📚 วิชา", value=subject, inline=True)
-    embed.add_field(name="📌 รายละเอียด", value=detail, inline=False)
-    embed.add_field(name="📅 กำหนดส่ง", value=formatted_date if formatted_date else "ไม่ระบุ (ไม่มีกำหนด)", inline=True)
-    
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="การบ้าน", description="แสดงรายการการบ้านและงานทั้งหมดในระบบ")
-async def slash_list_homework(interaction: discord.Interaction):
-    db_conn = sqlite3.connect('homework.db')
-    db_cursor = db_conn.cursor()
-    db_cursor.execute("SELECT id, subject, title, due_date FROM homework ORDER BY due_date ASC")
-    rows = db_cursor.fetchall()
-    db_conn.close()
+@bot.command(name='การบ้าน')
+async def list_homework(ctx):
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, due_date FROM homework ORDER BY due_date ASC")
+    rows = cursor.fetchall()
+    conn.close()
     
     if not rows:
-        embed = discord.Embed(
-            title="🎉 ยินดีด้วย!",
-            description="**ตอนนี้ไม่มีงานค้างในระบบเลยครับ!** สบายใจได้",
-            color=discord.Color.gold()
-        )
-        await interaction.response.send_message(embed=embed)
         return
         
-    embed = discord.Embed(
-        title="📝 รายการการบ้านและงานทั้งหมด",
-        color=discord.Color.blue(),
-        timestamp=datetime.datetime.now(tz_thailand)
-    )
+    msg = "📝 **รายการการบ้านปัจจุบัน:**\n"
     for row in rows:
-        due_text = row[3] if row[3] else "ไม่ระบุกำหนดส่ง"
-        embed.add_field(
-            name=f"🔹 [ID: {row[0]}] วิชา: {row[1]}",
-            value=f"📌 รายละเอียด: {row[2]}\n📅 กำหนดส่ง: **{due_text}**",
-            inline=False
-        )
-    await interaction.response.send_message(embed=embed)
+        msg += f"🔹 [ID: {row[0]}] **{row[1]}** - ส่งวันที่ {row[2]}\n"
+    await ctx.reply(msg)
 
-@bot.tree.command(name="ลบ", description="ลบงานออกจากระบบด้วยรหัส ID")
-async def slash_delete_homework(interaction: discord.Interaction, homework_id: int):
-    db_conn = sqlite3.connect('homework.db')
-    db_cursor = db_conn.cursor()
-    db_cursor.execute("SELECT subject, title FROM homework WHERE id = ?", (homework_id,))
-    row = db_cursor.fetchone()
+@bot.command(name='ลบ')
+async def delete_homework(ctx, homework_id: int):
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT title FROM homework WHERE id = ?", (homework_id,))
+    row = cursor.fetchone()
+    
     if row:
-        db_cursor.execute("DELETE FROM homework WHERE id = ?", (homework_id,))
-        db_conn.commit()
-        
-        embed = discord.Embed(
-            title="🗑️ ลบงานสำเร็จ",
-            description=f"นำงานวิชา **{row[0]}** ({row[1]}) ออกจากระบบเรียบร้อยแล้วครับ!",
-            color=discord.Color.light_grey()
-        )
-        await interaction.response.send_message(embed=embed)
+        cursor.execute("DELETE FROM homework WHERE id = ?", (homework_id,))
+        conn.commit()
+        await ctx.reply(f"🗑️ ลบการบ้านงาน **\"{row[0]}\"** เรียบร้อยแล้วครับ!")
     else:
-        embed = discord.Embed(
-            title="❌ ลบไม่สำเร็จ",
-            description=f"ไม่พบงานรหัส ID: {homework_id} ในระบบ",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    db_conn.close()
+        await ctx.reply(f"❌ ไม่พบการบ้านรหัส ID: {homework_id} ในระบบ")
+        
+    conn.close()
 
-# ==================== AI CONVERSATION & VISION SYSTEM ====================
-
-def ask_groq_text(conversation_history):
-    if not groq_client: return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI"
-    messages = [{"role": "system", "content": "คุณคือผู้ช่วยตอบคำถามการบ้านภาษาไทยที่สุภาพ กระชับ และเข้าใจบริบทการสนทนาต่อเนื่อง"}]
-    messages.extend(conversation_history)
+def ask_groq(user_question):
+    if not groq_client:
+        return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI"
+    
+    prompt = f"คุณคือบอทผู้ช่วยทำการบ้านใน Discord จงตอบคำถามนี้อย่างกระชับ เข้าใจง่าย: {user_question}"
+    
     response = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=messages
-    )
-    return response.choices[0].message.content
-
-def ask_groq_vision(image_base64, user_prompt):
-    if not groq_client: return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI"
-    
-    prompt_text = user_prompt if user_prompt else "ช่วยอ่านโจทย์การบ้านจากภาพนี้ แล้วอธิบายวิธีทำและคำตอบอย่างเป็นขั้นตอนให้หน่อยครับ"
-    
-    messages = [
-        {"role": "system", "content": "คุณคือ AI ผู้เชี่ยวชาญการตรวจโจทย์และวิเคราะห์การบ้านจากรูปภาพ จงอ่านโจทย์ อธิบายวิธีทำ และสรุปคำตอบให้ชัดเจน สุภาพ สั้นกระชับ ภาษาไทย"},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt_text},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}"
-                    }
-                }
-            ]
-        }
-    ]
-    response = groq_client.chat.completions.create(
-        model="llama-3.2-11b-vision-instruct",
-        messages=messages
+        messages=[
+            {"role": "system", "content": "คุณคือผู้ช่วยตอบคำถามการบ้านภาษาไทย"},
+            {"role": "user", "content": prompt}
+        ]
     )
     return response.choices[0].message.content
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user: return
-    
-    is_reply_to_bot = False
-    if message.reference and message.reference.message_id:
-        try:
-            replied_msg = await message.channel.fetch_message(message.reference.message_id)
-            if replied_msg.author == bot.user:
-                is_reply_to_bot = True
-        except:
-            pass
+    if message.author == bot.user:
+        return
 
-    if bot.user.mentioned_in(message) or is_reply_to_bot:
+    if bot.user.mentioned_in(message):
         user_question = message.content.replace(f'<@{bot.user.id}>', '').strip()
-        
-        has_image = False
-        image_url = None
-        
-        if message.attachments:
-            for attachment in message.attachments:
-                if attachment.content_type and attachment.content_type.startswith('image/'):
-                    has_image = True
-                    image_url = attachment.url
-                    break
-        
-        async with message.channel.typing():
-            try:
-                if has_image:
-                    response_bytes = await asyncio.to_thread(requests.get, image_url)
-                    image_base64 = base64.b64encode(response_bytes.content).decode('utf-8')
-                    
-                    reply_text = await asyncio.to_thread(ask_groq_vision, image_base64, user_question)
-                    
-                    embed = discord.Embed(
-                        title="👁️🤖 ผลการวิเคราะห์โจทย์จากรูปภาพ",
-                        description=reply_text,
-                        color=discord.Color.teal()
-                    )
-                    await message.reply(embed=embed)
-                    
-                elif user_question:
-                    conversation_history = []
-                    
-                    if message.reference and message.reference.message_id:
-                        current_ref = message.reference
-                        for _ in range(4): 
-                            if not current_ref or not current_ref.message_id:
-                                break
-                            try:
-                                old_msg = await message.channel.fetch_message(current_ref.message_id)
-                                clean_content = old_msg.content.replace(f'<@{bot.user.id}>', '').strip()
-                                
-                                if old_msg.author == bot.user:
-                                    if old_msg.embeds:
-                                        clean_content = old_msg.embeds[0].description
-                                    conversation_history.insert(0, {"role": "assistant", "content": clean_content})
-                                else:
-                                    conversation_history.insert(0, {"role": "user", "content": clean_content})
-                                
-                                current_ref = old_msg.reference
-                            except:
-                                break
-                    
-                    conversation_history.append({"role": "user", "content": user_question})
-                    
-                    reply_text = await asyncio.to_thread(ask_groq_text, conversation_history)
-                    
-                    embed = discord.Embed(
-                        title="🤖 คำตอบจาก AI ผู้ช่วยทำการบ้าน",
-                        description=reply_text,
-                        color=discord.Color.purple()
-                    )
-                    await message.reply(embed=embed)
-                    
-            except Exception as e:
-                await message.reply(f"❌ ระบบ Groq AI ขัดข้อง: {e}")
-                    
+        if user_question:
+            async with message.channel.typing():
+                try:
+                    reply_text = await asyncio.to_thread(ask_groq, user_question)
+                    await message.reply(reply_text)
+                except Exception as e:
+                    await message.reply(f"❌ ระบบ Groq AI ขัดข้อง: {e}")
+
     await bot.process_commands(message)
 
-if __name__ == "__main__":
-    server_thread = Thread(target=run_web_server)
-    server_thread.daemon = True
-    server_thread.start()
-    
-    if DISCORD_TOKEN:
-        bot.run(DISCORD_TOKEN)
-    else:
-        print("❌ ไม่พบ DISCORD_TOKEN ในระบบ")
+if DISCORD_TOKEN:
+    bot.run(DISCORD_TOKEN)
+
