@@ -1,5 +1,4 @@
 import sys, types
-# แก้ปัญหา audioop หายบน Python 3.14
 if 'audioop' not in sys.modules:
     sys.modules['audioop'] = types.ModuleType('audioop')
 
@@ -10,12 +9,30 @@ import sqlite3
 from datetime import datetime
 import asyncio
 import os
+from threading import Thread
+from flask import Flask
+
+# ==================== KEEP ALIVE WEB SERVER ====================
+# สร้าง Web Server สั้นๆ เพื่อตอบ Render ว่าแอปทำงานอยู่
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
 
 # ==================== CONFIGURATION ====================
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
-# ดึง ID ห้องโดยตรงจาก Environment Variables
 ANNOUNCE_CHANNEL_ID = int(os.environ.get('ANNOUNCE_CHANNEL_ID', 0))
 HOMEWORK_CHANNEL_ID = int(os.environ.get('HOMEWORK_CHANNEL_ID', 0))
 
@@ -46,8 +63,6 @@ init_db()
 @bot.event
 async def on_ready():
     print(f'บอท {bot.user.name} ออนไลน์แล้ว!')
-    
-    # แจ้งเตือนปิงสถานะเมื่อบอทรีสตาร์ท
     if ANNOUNCE_CHANNEL_ID != 0:
         announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
         if announce_channel:
@@ -56,12 +71,11 @@ async def on_ready():
     if not check_homework_reminders.is_running():
         check_homework_reminders.start()
 
-# เช็กการบ้านอัตโนมัติ
 @tasks.loop(hours=1)
 async def check_homework_reminders():
     try:
         now = datetime.now()
-        if now.hour == 8:  # แจ้งเตือนตอน 8 โมงเช้า
+        if now.hour == 8:
             today = now.strftime('%Y-%m-%d')
             conn = sqlite3.connect('homework.db')
             cursor = conn.cursor()
@@ -165,6 +179,9 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-if DISCORD_TOKEN:
-    bot.run(DISCORD_TOKEN)
+# ==================== START BOT ====================
+if __name__ == '__main__':
+    keep_alive()  # รันเว็บเซิร์ฟเวอร์หลอกฝั่ง Background
+    if DISCORD_TOKEN:
+        bot.run(DISCORD_TOKEN)
 
