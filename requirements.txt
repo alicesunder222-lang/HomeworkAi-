@@ -1,5 +1,3 @@
-discord.py
+discord.py>=2.3.0
 groq
-asyncio
 flask
-requests
