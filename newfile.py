@@ -5,25 +5,23 @@ if 'audioop' not in sys.modules:
 import os
 import sqlite3
 from datetime import datetime
-import asyncio
 from threading import Thread
 
 import discord
 from discord.ext import commands
 from discord import app_commands, ui
 from flask import Flask
-from groq import Groq
 
 # ==================== WEB SERVER FOR RENDER ====================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot System is Active!"
+    return "Bot Homework System is Active!"
 
 def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 def keep_alive():
     t = Thread(target=run_web)
@@ -32,12 +30,9 @@ def keep_alive():
 
 # ==================== CONFIGURATION ====================
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
 # ID ของช่องที่ 3 (ช่องคลังบันทึกการบ้าน)
 STORAGE_CHANNEL_ID = int(os.environ.get('STORAGE_CHANNEL_ID', 0))
-
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -138,7 +133,7 @@ class DeleteHomeworkSelect(ui.Select):
         conn.commit()
         conn.close()
 
-        await interaction.response.send_message(f"🗑️ ลบการบ้านเรียบร้อยแล้ว!", ephemeral=True)
+        await interaction.response.send_message("🗑️ ลบการบ้านเรียบร้อยแล้ว!", ephemeral=True)
 
 class DeleteHomeworkView(ui.View):
     def __init__(self, options):
@@ -202,7 +197,7 @@ class MemberPanelView(ui.View):
                 value=f"{desc}📅 กำหนดส่ง: **{row[3]}**",
                 inline=False
             )
-        # ephemeral=True เพื่อให้เห็นแค่คนที่กดปุ่มคนเดียว คนอื่นมองไม่เห็น และไม่ทำให้แชทรก
+        # ephemeral=True เห็นเฉพาะคนที่กดปุ่ม ไม่ทำให้แชทรก
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event
@@ -230,37 +225,6 @@ async def setup_view(interaction: discord.Interaction):
     )
     await interaction.channel.send(embed=embed, view=MemberPanelView())
     await interaction.response.send_message("✅ สร้างแผงสำหรับสมาชิกเรียบร้อย!", ephemeral=True)
-
-# ==================== AI MENTION SYSTEM ====================
-def ask_groq(user_question):
-    if not groq_client:
-        return "❌ บอทยังไม่ได้ตั้งค่าคีย์ AI"
-    prompt = f"คุณคือบอทผู้ช่วยทำการบ้านใน Discord จงตอบคำถามนี้อย่างกระชับ เข้าใจง่าย: {user_question}"
-    response = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": "คุณคือผู้ช่วยตอบคำถามการบ้านภาษาไทย"},
-            {"role": "user", "content": prompt}
-        ]
-    )
-    return response.choices[0].message.content
-
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
-        return
-
-    if bot.user.mentioned_in(message):
-        user_question = message.content.replace(f'<@{bot.user.id}>', '').strip()
-        if user_question:
-            async with message.channel.typing():
-                try:
-                    reply_text = await asyncio.to_thread(ask_groq, user_question)
-                    await message.reply(reply_text)
-                except Exception as e:
-                    await message.reply(f"❌ ระบบ AI ขัดข้อง: {e}")
-
-    await bot.process_commands(message)
 
 # ==================== START BOT ====================
 if __name__ == '__main__':
