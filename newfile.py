@@ -9,11 +9,15 @@ import sqlite3
 from datetime import datetime
 import asyncio
 import os
+import logging
 from threading import Thread
 from flask import Flask
 
 # ==================== KEEP ALIVE WEB SERVER ====================
-# สร้าง Web Server สั้นๆ เพื่อตอบ Render ว่าแอปทำงานอยู่
+# ปิด log กวนใจของ Flask
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
 app = Flask('')
 
 @app.route('/')
@@ -21,7 +25,8 @@ def home():
     return "Bot is alive!"
 
 def run_web():
-    port = int(os.environ.get("PORT", 8080))
+    # กำหนด Port เป็น 10000 ตามมาตรฐาน Render
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
@@ -124,6 +129,7 @@ async def list_homework(ctx):
     conn.close()
     
     if not rows:
+        await ctx.reply("📝 ไม่มีรายการการบ้านในขณะนี้ครับ")
         return
         
     msg = "📝 **รายการการบ้านปัจจุบัน:**\n"
@@ -154,7 +160,7 @@ def ask_groq(user_question):
     prompt = f"คุณคือบอทผู้ช่วยทำการบ้านใน Discord จงตอบคำถามนี้อย่างกระชับ เข้าใจง่าย: {user_question}"
     
     response = groq_client.chat.completions.create(
-        model="​llama-3.1-8b-instant",
+        model="llama-3.1-8b-instant",
         messages=[
             {"role": "system", "content": "คุณคือผู้ช่วยตอบคำถามการบ้านภาษาไทย"},
             {"role": "user", "content": prompt}
@@ -181,7 +187,7 @@ async def on_message(message):
 
 # ==================== START BOT ====================
 if __name__ == '__main__':
-    keep_alive()  # รันเว็บเซิร์ฟเวอร์หลอกฝั่ง Background
+    keep_alive()  # รันเว็บเซิร์ฟเวอร์ก่อน
     if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN)
-
+        
