@@ -154,7 +154,7 @@ def ask_groq(user_question):
     prompt = f"คุณคือบอทผู้ช่วยทำการบ้านใน Discord จงตอบคำถามนี้อย่างกระชับ เข้าใจง่าย: {user_question}"
     
     response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-70b-versatile",
         messages=[
             {"role": "system", "content": "คุณคือผู้ช่วยตอบคำถามการบ้านภาษาไทย"},
             {"role": "user", "content": prompt}
