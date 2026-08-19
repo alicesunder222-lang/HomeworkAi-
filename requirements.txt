@@ -1,5 +1,5 @@
-discord.py==2.4.0
-groq==0.18.0
+discord.py
+groq
 asyncio
 flask
 requests
