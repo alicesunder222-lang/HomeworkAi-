@@ -1,4 +1,26 @@
+import os
 import sys, types
+from threading import Thread
+from flask import Flask
+
+# 1. สร้าง Web Server สั้นๆ และเปิดพอร์ตทันทีที่เริ่มรันไฟล์
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_web():
+    # ดึง Port จาก Render ( Render จะกำหนด PORT ให้เองอัตโนมัติ)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# รัน Flask บน Background Thread ทันที
+t = Thread(target=run_web)
+t.daemon = True
+t.start()
+
+# ==================== DISCORD & BOT LOGIC ====================
 if 'audioop' not in sys.modules:
     sys.modules['audioop'] = types.ModuleType('audioop')
 
@@ -8,33 +30,8 @@ from groq import Groq
 import sqlite3
 from datetime import datetime
 import asyncio
-import os
-import logging
-from threading import Thread
-from flask import Flask
 
-# ==================== KEEP ALIVE WEB SERVER ====================
-# ปิด log กวนใจของ Flask
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
-def run_web():
-    # กำหนด Port เป็น 10000 ตามมาตรฐาน Render
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
-    t.start()
-
-# ==================== CONFIGURATION ====================
+# Config
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
@@ -47,7 +44,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# ==================== DATABASE SETUP ====================
+# Database
 def init_db():
     conn = sqlite3.connect('homework.db')
     cursor = conn.cursor()
@@ -64,7 +61,7 @@ def init_db():
 
 init_db()
 
-# ==================== BOT EVENTS & TASKS ====================
+# Bot Events & Tasks
 @bot.event
 async def on_ready():
     print(f'บอท {bot.user.name} ออนไลน์แล้ว!')
@@ -101,8 +98,7 @@ async def check_homework_reminders():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดในระบบแจ้งเตือน: {e}")
 
-# ==================== COMMANDS ====================
-
+# Commands
 @bot.command(name='จด')
 async def add_homework(ctx, title: str, due_date: str):
     try:
@@ -185,9 +181,8 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ==================== START BOT ====================
+# Start Discord Bot
 if __name__ == '__main__':
-    keep_alive()  # รันเว็บเซิร์ฟเวอร์ก่อน
     if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN)
-        
+
