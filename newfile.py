@@ -5,33 +5,13 @@ if 'audioop' not in sys.modules:
 import os
 import sqlite3
 from datetime import datetime
-from threading import Thread
 
 import discord
 from discord.ext import commands
 from discord import app_commands, ui
-from flask import Flask
-
-# ==================== WEB SERVER FOR RENDER ====================
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot Homework System is Active!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
-    t.start()
 
 # ==================== CONFIGURATION ====================
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
-
-# ID ของช่องที่ 3 (ช่องคลังบันทึกการบ้าน)
 STORAGE_CHANNEL_ID = int(os.environ.get('STORAGE_CHANNEL_ID', 0))
 
 intents = discord.Intents.default()
@@ -65,9 +45,7 @@ def init_db():
 
 init_db()
 
-# ==================== UI COMPONENTS & MODALS ====================
-
-# แบบฟอร์มกรอกข้อมูลการบ้าน (สำหรับช่อง 2 Admin)
+# ==================== UI COMPONENTS ====================
 class AddHomeworkModal(ui.Modal, title="➕ เพิ่มรายการการบ้าน"):
     title_input = ui.TextInput(label="ชื่อวิชา / หัวข้อ", placeholder="เช่น คณิตเพิ่มเติม แบบฝึกหัด 1.2", required=True)
     desc_input = ui.TextInput(label="รายละเอียด / คำอธิบาย", style=discord.TextStyle.paragraph, placeholder="เช่น ทำหน้า 10-12 ส่งในระบบ", required=False)
@@ -75,14 +53,12 @@ class AddHomeworkModal(ui.Modal, title="➕ เพิ่มรายการก
 
     async def on_submit(self, interaction: discord.Interaction):
         due_date_str = self.date_input.value.strip()
-        
         try:
             datetime.strptime(due_date_str, '%Y-%m-%d')
         except ValueError:
             await interaction.response.send_message("❌ รูปแบบวันที่ไม่ถูกต้อง! ต้องเป็น **ปี-เดือน-วัน** (เช่น `2026-08-25`)", ephemeral=True)
             return
 
-        # 1. บันทึกข้อมูลเข้า Storage Channel (ช่องที่ 3)
         storage_channel = bot.get_channel(STORAGE_CHANNEL_ID) if STORAGE_CHANNEL_ID != 0 else interaction.channel
         
         embed = discord.Embed(
@@ -95,7 +71,6 @@ class AddHomeworkModal(ui.Modal, title="➕ เพิ่มรายการก
 
         msg = await storage_channel.send(embed=embed)
 
-        # 2. บันทึกลง Database
         conn = sqlite3.connect('homework.db')
         cursor = conn.cursor()
         cursor.execute(
@@ -107,7 +82,6 @@ class AddHomeworkModal(ui.Modal, title="➕ เพิ่มรายการก
 
         await interaction.response.send_message(f"✅ บันทึกการบ้าน **{self.title_input.value}** ส่งเข้าคลังเรียบร้อยแล้ว!", ephemeral=True)
 
-# เมนูดรอปดาวน์สำหรับลบการบ้าน (สำหรับช่อง 2 Admin)
 class DeleteHomeworkSelect(ui.Select):
     def __init__(self, options):
         super().__init__(placeholder="เลือกการบ้านที่ต้องการลบ...", options=options)
@@ -140,7 +114,6 @@ class DeleteHomeworkView(ui.View):
         super().__init__(timeout=60)
         self.add_item(DeleteHomeworkSelect(options))
 
-# ปุ่มแผงควบคุม Admin (ช่องที่ 2)
 class AdminPanelView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -172,7 +145,6 @@ class AdminPanelView(ui.View):
         view = DeleteHomeworkView(options)
         await interaction.response.send_message("เลือกการบ้านที่ต้องการลบ:", view=view, ephemeral=True)
 
-# ปุ่มแผงควบคุมสำหรับสมาชิก (ช่องที่ 1 - แสดงผลเฉพาะคนที่กดแบบ Ephemeral)
 class MemberPanelView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -197,7 +169,6 @@ class MemberPanelView(ui.View):
                 value=f"{desc}📅 กำหนดส่ง: **{row[3]}**",
                 inline=False
             )
-        # ephemeral=True เห็นเฉพาะคนที่กดปุ่ม ไม่ทำให้แชทรก
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event
@@ -205,7 +176,6 @@ async def on_ready():
     print(f'บอท {bot.user.name} ออนไลน์แล้ว!')
 
 # ==================== SLASH COMMANDS ====================
-
 @bot.tree.command(name="setup_admin", description="สร้างแผงควบคุมสำหรับ Admin (ใช้ในช่อง Admin)")
 async def setup_admin(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -228,7 +198,6 @@ async def setup_view(interaction: discord.Interaction):
 
 # ==================== START BOT ====================
 if __name__ == '__main__':
-    keep_alive()
     if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN)
 
